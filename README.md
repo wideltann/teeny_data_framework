@@ -43,6 +43,7 @@ pip install openpyxl          # For Excel files
 pip install pyarrow           # For Parquet files
 pip install zipfile-deflate64 # For advanced ZIP compression
 pip install marimo            # For running notebooks
+pip install s3fs              # For S3 support (uses fsspec)
 ```
 
 ## Quick Start
@@ -280,6 +281,77 @@ update_table(
 )
 ```
 
+### S3 Support
+
+Load files directly from S3 by using `s3://` paths for `search_dir`:
+
+```python
+# Local files (existing behavior)
+add_files_to_metadata_table(
+    search_dir="data/raw",
+    landing_dir="data/landing",
+    ...
+)
+
+# S3 files (automatically detected)
+add_files_to_metadata_table(
+    search_dir="s3://my-bucket/path/to/data",
+    landing_dir="data/landing",  # Files downloaded here
+    filetype="csv",
+    compression_type="zip",  # Also works with ZIPs in S3
+    ...
+)
+```
+
+**How it works:**
+- Detects S3 paths by `s3://` prefix
+- Uses `s3fs` library (built on fsspec) for transparent S3 file operations
+- Downloads files to `landing_dir` for processing
+- Uploads to S3 `landing_dir` if specified
+
+**Requirements:**
+- Install s3fs: `pip install s3fs`
+- AWS credentials configured (via `~/.aws/credentials`, environment variables, or IAM role)
+
+**Using AWS SSO or named profiles:**
+```python
+import s3fs
+fs = s3fs.S3FileSystem(profile="my-sso-profile")
+add_files_to_metadata_table(..., filesystem=fs)
+```
+
+Or set `AWS_PROFILE` environment variable and credentials are used automatically.
+
+### Schema Validation
+
+The framework automatically validates that table schemas match your DataFrame:
+
+```python
+# First run: creates table with schema
+update_table(
+    column_mapping={
+        "id": ([], "string"),
+        "value": ([], "float64"),
+    },
+    ...
+)
+
+# Second run with different schema: fails with clear error
+update_table(
+    column_mapping={
+        "id": ([], "string"),
+        "amount": ([], "float64"),  # Different column name!
+    },
+    ...
+)
+# ValueError: Schema mismatch for raw.my_table:
+# DataFrame has columns not in table: ['amount']
+# Table columns: ['id', 'value']
+# DataFrame columns: ['amount', 'id']
+```
+
+This prevents confusing late-stage failures during COPY operations.
+
 ### Custom Transformations
 
 ```python
@@ -289,6 +361,75 @@ def transform_fn(df):
 
 update_table(
     transform_fn=transform_fn,
+    ...
+)
+```
+
+### Custom Read Function
+
+For non-standard file formats or complex reading logic:
+
+```python
+def custom_read_fn(full_path):
+    df = pd.read_csv(full_path, skiprows=5)
+    df['computed'] = df['value'] * 10
+    return df
+
+update_table(
+    custom_read_fn=custom_read_fn,
+    ...
+)
+```
+
+### Dynamic Column Mapping
+
+Use `column_mapping_fn` when different files need different mappings:
+
+```python
+def column_mapping_fn(file_path):
+    if "2020" in str(file_path):
+        return {"id": ([], "string"), "value": ([], "Int64")}
+    else:
+        return {"id": ([], "string"), "amount": ([], "float64")}
+
+update_table(
+    column_mapping_fn=column_mapping_fn,
+    ...
+)
+```
+
+### File List Filtering
+
+Filter which files to process:
+
+```python
+def file_list_filter_fn(file_list):
+    return [f for f in file_list if "2024" in str(f)]
+
+update_table(
+    file_list_filter_fn=file_list_filter_fn,
+    ...
+)
+```
+
+### Sampling
+
+Process only a subset of files (useful for testing):
+
+```python
+update_table(
+    sample=10,  # Only process first 10 files
+    ...
+)
+```
+
+### Null Value Handling
+
+Specify custom null value representation:
+
+```python
+update_table(
+    null_value="NA",  # Treat "NA" as NULL
     ...
 )
 ```
@@ -397,6 +538,33 @@ teeny_data_framework/
 ```
 
 ## Testing
+
+### Running the Test Suite
+
+The project includes a comprehensive test suite using pytest and testcontainers (requires Docker):
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run specific test file
+pytest tests/test_table_functions_postgres.py -v
+
+# Run with coverage
+pytest tests/ --cov=src --cov-report=html
+```
+
+**Test categories:**
+- Path utilities (`normalize_path`, `path_join`, `path_basename`, `path_parent`)
+- S3 helpers (`is_s3_path`, `get_s3_filesystem`)
+- Column mapping and selection
+- File readers (CSV, TSV, PSV, Excel, Parquet, Fixed-width)
+- Database operations (table creation, COPY, schema validation)
+- Metadata functions
+- Schema inference CLI
+- End-to-end integration tests
+
+### Manual Testing
 
 Reset database and test:
 

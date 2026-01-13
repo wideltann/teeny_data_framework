@@ -46,6 +46,38 @@ def _(Path, mo, psycopg):
 
 
 @app.cell
+def _(mo):
+    mo.md("""
+    ## Schema Inference with Snake Case Conversion
+
+    The CLI automatically converts column names to snake_case and tracks original names.
+    This is useful when working with files that have mixed naming conventions.
+
+    **Example Usage:**
+    ```bash
+    # For files with headers like "Sepal Length", "Petal Width", "Class Name"
+    python src/table_functions_postgres.py data/your_file.csv --pretty
+    ```
+
+    **Output format:**
+    ```json
+    {
+      "sepal_length": [["Sepal Length"], "float64"],
+      "petal_width": [["Petal Width"], "float64"],
+      "class_name": [["Class Name"], "string"],
+      "already_snake": [[], "string"]
+    }
+    ```
+
+    - Converts: `"Sepal Length"` → `"sepal_length"`
+    - Original name stored in array: `[["Sepal Length"], "float64"]`
+    - Already snake_case gets empty array: `[[], "string"]`
+    - Framework matches either snake_case or original name when reading files
+    """)
+    return
+
+
+@app.cell
 def _():
     """Define column mapping for Iris dataset"""
     # Iris dataset columns: sepal_length, sepal_width, petal_length, petal_width, class
