@@ -47,7 +47,7 @@ column_mapping = {
 
 # 3. Use in update_table()
 update_table(
-    conn=conn,
+    conninfo="postgresql://user:pass@host/db",  # Connection string
     column_mapping=column_mapping,  # <-- Pasted mapping
     ...
 )
@@ -113,7 +113,7 @@ The framework supports non-UTF-8 encodings like CP-1252 (Windows-1252), common i
 **For `add_files_to_metadata_table()`:**
 ```python
 add_files_to_metadata_table(
-    conn=conn,
+    conninfo="postgresql://user:pass@host/db",
     schema="raw",
     search_dir="data/raw/",
     landing_dir="data/landing/",
@@ -125,7 +125,7 @@ add_files_to_metadata_table(
 **For `update_table()` - direct encoding parameter:**
 ```python
 update_table(
-    conn=conn,
+    conninfo="postgresql://user:pass@host/db",
     schema="raw",
     output_table="my_table",
     filetype="csv",
@@ -151,7 +151,7 @@ def read_cp1252_csv(full_path):
     )
 
 update_table(
-    conn=conn,
+    conninfo="postgresql://user:pass@host/db",
     schema="raw",
     output_table="my_table",
     filetype="csv",
@@ -188,7 +188,7 @@ Both `search_dir` and `landing_dir` can be prefixed with `s3://` to use S3 bucke
 ```python
 # Example: Read from S3, write to local landing
 add_files_to_metadata_table(
-    conn=conn,
+    conninfo="postgresql://user:pass@host/db",
     schema="raw",
     search_dir="s3://my-bucket/raw-data/",
     landing_dir="data/landing/",
@@ -197,7 +197,7 @@ add_files_to_metadata_table(
 
 # Example: Read from local, write to S3 landing
 add_files_to_metadata_table(
-    conn=conn,
+    conninfo="postgresql://user:pass@host/db",
     schema="raw",
     search_dir="data/raw/",
     landing_dir="s3://my-bucket/landing/",
@@ -206,7 +206,7 @@ add_files_to_metadata_table(
 
 # Example: Both S3
 add_files_to_metadata_table(
-    conn=conn,
+    conninfo="postgresql://user:pass@host/db",
     schema="raw",
     search_dir="s3://my-bucket/raw-data/",
     landing_dir="s3://my-bucket/landing/",
@@ -297,7 +297,7 @@ DHC files are **pipe-delimited** (`.dhc`) with **no headers**:
 ```python
 # Step 1: Extract from ZIP
 add_files_to_metadata_table(
-    conn=conn,
+    conninfo="postgresql://user:pass@host/db",
     schema="raw",
     search_dir=str(search_dir),
     landing_dir=str(landing_dir),
@@ -311,7 +311,7 @@ add_files_to_metadata_table(
 
 # Step 2: Ingest extracted files
 update_table(
-    conn=conn,
+    conninfo="postgresql://user:pass@host/db",
     schema="raw",
     output_table="my_table",
     filetype="csv",

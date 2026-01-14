@@ -48,8 +48,11 @@ def _():
 
 @app.cell
 def _(Path, psycopg):
-    # Connect to PostgreSQL
-    conn = psycopg.connect("postgresql://tanner@localhost:5432/postgres", autocommit=False)
+    # Connection string for all database operations
+    conninfo = "postgresql://tanner@localhost:5432/postgres"
+
+    # Create a connection for mo.sql() queries
+    conn = psycopg.connect(conninfo, autocommit=False)
 
     # Create schema
     with conn.cursor() as cur:
@@ -64,7 +67,7 @@ def _(Path, psycopg):
     # Create directories
     search_dir.mkdir(parents=True, exist_ok=True)
     landing_dir.mkdir(parents=True, exist_ok=True)
-    return conn, landing_dir, search_dir
+    return conn, conninfo, landing_dir, search_dir
 
 
 @app.cell
@@ -113,10 +116,10 @@ def _(mo):
 
 
 @app.cell
-def _(add_files_to_metadata_table, conn, landing_dir, search_dir):
+def _(add_files_to_metadata_table, conninfo, landing_dir, search_dir):
     # Add files to metadata with CP-1252 encoding
     metadata_df = add_files_to_metadata_table(
-        conn=conn,
+        conninfo=conninfo,
         schema="test_encoding",
         search_dir=str(search_dir),
         landing_dir=str(landing_dir),
@@ -160,7 +163,7 @@ def _(mo):
 
 
 @app.cell
-def _(conn, landing_dir, update_table):
+def _(conninfo, landing_dir, update_table):
     # Define column mapping from schema inference
     column_mapping = {
         "name": (["Name"], "string"),
@@ -171,7 +174,7 @@ def _(conn, landing_dir, update_table):
 
     # Ingest with encoding parameter
     ingest_df = update_table(
-        conn=conn,
+        conninfo=conninfo,
         schema="test_encoding",
         output_table="restaurants",
         filetype="csv",
@@ -234,7 +237,7 @@ def _(mo):
     ### 1. For `add_files_to_metadata_table()`
     ```python
     add_files_to_metadata_table(
-        conn=conn,
+        conninfo="postgresql://user:pass@host/db",
         schema="raw",
         search_dir="data/raw/",
         landing_dir="data/landing/",
@@ -246,7 +249,7 @@ def _(mo):
     ### 2. For `update_table()` - NEW! Direct encoding parameter
     ```python
     update_table(
-        conn=conn,
+        conninfo="postgresql://user:pass@host/db",
         schema="raw",
         output_table="my_table",
         filetype="csv",

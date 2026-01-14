@@ -669,7 +669,7 @@ def update_metadata(
 
 
 def update_table(
-    conn: Optional[psycopg.Connection] = None,
+    conninfo: Optional[str] = None,
     resume: bool = False,
     retry_failed: bool = False,
     sample: Optional[int] = None,
@@ -697,17 +697,21 @@ def update_table(
 ) -> pd.DataFrame:
     """
     Main ingestion function that reads files and writes to PostgreSQL
+
+    Args:
+        conninfo: PostgreSQL connection string (e.g. "postgresql://user:pass@host/db")
+        ... (other args unchanged)
     """
     import time
 
-    required_params = [landing_dir, schema, conn, filetype]
+    required_params = [landing_dir, schema, conninfo, filetype]
     if not custom_read_fn and not column_mapping_fn:
         required_params.append(column_mapping)
 
     if any(param is None for param in required_params):
         print(f"Missing required parameters: {required_params}")
         raise ValueError(
-            "Required params: landing_dir, filetype, column_mapping, schema, conn. Column mapping not required if using custom_read_fn or if using column_mapping_fn"
+            "Required params: landing_dir, filetype, column_mapping, schema, conninfo. Column mapping not required if using custom_read_fn or if using column_mapping_fn"
         )
 
     # Normalize landing_dir to string with trailing slash for LIKE query
@@ -729,9 +733,10 @@ def update_table(
 
     print(f"Metadata file search query: {sql}")
 
-    with conn.cursor() as cur:
-        cur.execute(sql, (landing_dir, sql_glob))
-        rows = cur.fetchall()
+    with psycopg.connect(conninfo) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (landing_dir, sql_glob))
+            rows = cur.fetchall()
     file_list = sorted([row[0] for row in rows])
 
     if file_list_filter_fn:
@@ -747,9 +752,10 @@ def update_table(
                 {"AND status = 'Success'" if not retry_failed else ""}
         """
 
-        with conn.cursor() as cur:
-            cur.execute(sql, (landing_dir,))
-            rows = cur.fetchall()
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (landing_dir,))
+                rows = cur.fetchall()
         full_path_list = set(row[0] for row in rows)
         file_list = [f for f in file_list if f not in full_path_list]
 
@@ -821,14 +827,15 @@ def update_table(
                     value_name=pivot_mapping["value_column_name"],
                 )
 
-            # Raises exception on failure
-            row_count_check(
-                conn=conn,
-                schema=metadata_schema,
-                df=df,
-                full_path=full_path,
-                unpivot_row_multiplier=unpivot_row_multiplier,
-            )
+            # Fresh connection for row count check
+            with psycopg.connect(conninfo) as conn:
+                row_count_check(
+                    conn=conn,
+                    schema=metadata_schema,
+                    df=df,
+                    full_path=full_path,
+                    unpivot_row_multiplier=unpivot_row_multiplier,
+                )
 
             if transform_fn:
                 df = transform_fn(df=df)
@@ -845,39 +852,45 @@ def update_table(
                 output_table_naming_fn(file) if output_table_naming_fn else output_table
             )
 
-            # Check if table exists and delete existing records for this file
-            if table_exists(conn, schema, table_name):
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"DELETE FROM {schema}.{table_name} WHERE full_path = %s",
-                        (full_path,),
-                    )
+            # Fresh connection for write operations
+            with psycopg.connect(conninfo) as conn:
+                # Check if table exists and delete existing records for this file
+                if table_exists(conn, schema, table_name):
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            f"DELETE FROM {schema}.{table_name} WHERE full_path = %s",
+                            (full_path,),
+                        )
 
-            # Bulk load using COPY
-            copy_dataframe_to_table(conn, df, schema, table_name)
-            conn.commit()
+                # Bulk load using COPY
+                copy_dataframe_to_table(conn, df, schema, table_name)
+                conn.commit()
 
             ingest_runtime = int(time.time() - start_time)
 
-            update_metadata(
-                conn=conn,
-                full_path=full_path,
-                schema=metadata_schema,
-                unpivot_row_multiplier=unpivot_row_multiplier,
-                ingest_runtime=ingest_runtime,
-            )
-            conn.commit()
+            # Fresh connection for metadata update
+            with psycopg.connect(conninfo) as conn:
+                update_metadata(
+                    conn=conn,
+                    full_path=full_path,
+                    schema=metadata_schema,
+                    unpivot_row_multiplier=unpivot_row_multiplier,
+                    ingest_runtime=ingest_runtime,
+                )
+                conn.commit()
         except Exception as e:
             error_str = str(e)
 
-            update_metadata(
-                conn=conn,
-                full_path=full_path,
-                schema=metadata_schema,
-                error_message=error_str,
-                unpivot_row_multiplier=unpivot_row_multiplier,
-            )
-            conn.commit()
+            # Fresh connection for error metadata update
+            with psycopg.connect(conninfo) as conn:
+                update_metadata(
+                    conn=conn,
+                    full_path=full_path,
+                    schema=metadata_schema,
+                    error_message=error_str,
+                    unpivot_row_multiplier=unpivot_row_multiplier,
+                )
+                conn.commit()
 
             # Truncate error for printing
             if len(error_str) > 200:
@@ -896,11 +909,12 @@ def update_table(
         ORDER BY ingest_datetime DESC
     """
 
-    with conn.cursor() as cur:
-        cur.execute(sql, (landing_dir, sql_glob))
-        columns = [desc[0] for desc in cur.description]
-        rows = cur.fetchall()
-        return pd.DataFrame(rows, columns=columns)
+    with psycopg.connect(conninfo) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (landing_dir, sql_glob))
+            columns = [desc[0] for desc in cur.description]
+            rows = cur.fetchall()
+            return pd.DataFrame(rows, columns=columns)
 
 
 # START OF METADATA FUNCTIONS #
@@ -1371,10 +1385,13 @@ def get_file_metadata_row(
 
 
 def add_files_to_metadata_table(
-    conn: psycopg.Connection, **kwargs: Any
+    conninfo: str, **kwargs: Any
 ) -> pd.DataFrame:
     """
     Add files to metadata table, creating it if necessary
+
+    Args:
+        conninfo: PostgreSQL connection string (e.g. "postgresql://user:pass@host/db")
     """
     schema = kwargs.pop("schema", None)
     if not schema:
@@ -1426,29 +1443,30 @@ def add_files_to_metadata_table(
     output_table = f"{schema}.metadata"
 
     # Create metadata table if it doesn't exist
-    if not table_exists(conn, schema, "metadata"):
-        create_table_sql = f"""
-            CREATE TABLE {output_table} (
-                search_dir TEXT,
-                landing_dir TEXT,
-                full_path TEXT PRIMARY KEY,
-                filesize BIGINT,
-                header TEXT[],
-                row_count BIGINT,
-                archive_full_path TEXT,
-                file_hash TEXT,
-                metadata_ingest_datetime TIMESTAMP,
-                metadata_ingest_status TEXT,
-                ingest_datetime TIMESTAMP,
-                ingest_runtime INTEGER,
-                status TEXT,
-                error_message TEXT,
-                unpivot_row_multiplier INTEGER
-            )
-        """
-        with conn.cursor() as cur:
-            cur.execute(create_table_sql)
-        conn.commit()
+    with psycopg.connect(conninfo) as conn:
+        if not table_exists(conn, schema, "metadata"):
+            create_table_sql = f"""
+                CREATE TABLE {output_table} (
+                    search_dir TEXT,
+                    landing_dir TEXT,
+                    full_path TEXT PRIMARY KEY,
+                    filesize BIGINT,
+                    header TEXT[],
+                    row_count BIGINT,
+                    archive_full_path TEXT,
+                    file_hash TEXT,
+                    metadata_ingest_datetime TIMESTAMP,
+                    metadata_ingest_status TEXT,
+                    ingest_datetime TIMESTAMP,
+                    ingest_runtime INTEGER,
+                    status TEXT,
+                    error_message TEXT,
+                    unpivot_row_multiplier INTEGER
+                )
+            """
+            with conn.cursor() as cur:
+                cur.execute(create_table_sql)
+            conn.commit()
 
     resume = kwargs.get("resume", False)
     retry_failed = kwargs.pop("retry_failed", False)
@@ -1464,9 +1482,10 @@ def add_files_to_metadata_table(
                 {"AND metadata_ingest_status = 'Success'" if not retry_failed else ""}
         """
 
-        with conn.cursor() as cur:
-            cur.execute(sql, (search_dir, sql_glob))
-            rows = cur.fetchall()
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (search_dir, sql_glob))
+                rows = cur.fetchall()
         kwargs["full_path_list"] = [row[0] for row in rows]
 
     match compression_type:
@@ -1483,41 +1502,42 @@ def add_files_to_metadata_table(
         rows_sorted = sorted(rows, key=lambda x: x["full_path"] or "")
 
         # Upsert to metadata table using PostgreSQL's ON CONFLICT
-        with conn.cursor() as cur:
-            for row in rows_sorted:
-                cur.execute(
-                    f"""
-                    INSERT INTO {output_table}
-                    (search_dir, landing_dir, full_path, filesize, header, row_count,
-                     archive_full_path, file_hash, metadata_ingest_datetime, metadata_ingest_status)
-                    VALUES
-                    (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (full_path)
-                    DO UPDATE SET
-                        search_dir = EXCLUDED.search_dir,
-                        landing_dir = EXCLUDED.landing_dir,
-                        filesize = EXCLUDED.filesize,
-                        header = EXCLUDED.header,
-                        row_count = EXCLUDED.row_count,
-                        archive_full_path = EXCLUDED.archive_full_path,
-                        file_hash = EXCLUDED.file_hash,
-                        metadata_ingest_datetime = EXCLUDED.metadata_ingest_datetime,
-                        metadata_ingest_status = EXCLUDED.metadata_ingest_status
-                    """,
-                    (
-                        row["search_dir"],
-                        row["landing_dir"],
-                        row["full_path"],
-                        row["filesize"],
-                        row["header"],
-                        row["row_count"],
-                        row["archive_full_path"],
-                        row["file_hash"],
-                        row["metadata_ingest_datetime"],
-                        row["metadata_ingest_status"],
-                    ),
-                )
-        conn.commit()
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                for row in rows_sorted:
+                    cur.execute(
+                        f"""
+                        INSERT INTO {output_table}
+                        (search_dir, landing_dir, full_path, filesize, header, row_count,
+                         archive_full_path, file_hash, metadata_ingest_datetime, metadata_ingest_status)
+                        VALUES
+                        (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (full_path)
+                        DO UPDATE SET
+                            search_dir = EXCLUDED.search_dir,
+                            landing_dir = EXCLUDED.landing_dir,
+                            filesize = EXCLUDED.filesize,
+                            header = EXCLUDED.header,
+                            row_count = EXCLUDED.row_count,
+                            archive_full_path = EXCLUDED.archive_full_path,
+                            file_hash = EXCLUDED.file_hash,
+                            metadata_ingest_datetime = EXCLUDED.metadata_ingest_datetime,
+                            metadata_ingest_status = EXCLUDED.metadata_ingest_status
+                        """,
+                        (
+                            row["search_dir"],
+                            row["landing_dir"],
+                            row["full_path"],
+                            row["filesize"],
+                            row["header"],
+                            row["row_count"],
+                            row["archive_full_path"],
+                            row["file_hash"],
+                            row["metadata_ingest_datetime"],
+                            row["metadata_ingest_status"],
+                        ),
+                    )
+            conn.commit()
 
     # Return metadata results
     sql = f"""
@@ -1527,68 +1547,77 @@ def add_files_to_metadata_table(
         ORDER BY metadata_ingest_datetime DESC
     """
 
-    with conn.cursor() as cur:
-        cur.execute(sql, (search_dir, sql_glob))
-        columns = [desc[0] for desc in cur.description]
-        rows = cur.fetchall()
-        return pd.DataFrame(rows, columns=columns)
+    with psycopg.connect(conninfo) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (search_dir, sql_glob))
+            columns = [desc[0] for desc in cur.description]
+            rows = cur.fetchall()
+            return pd.DataFrame(rows, columns=columns)
 
 
 def drop_search_dir(
-    conn: psycopg.Connection,
+    conninfo: str,
     search_dir: str,
     schema: str,
 ) -> None:
     """
     Remove all files from a search directory from metadata
+
+    Args:
+        conninfo: PostgreSQL connection string (e.g. "postgresql://user:pass@host/db")
     """
     search_dir = Path(search_dir).as_posix()
 
-    with conn.cursor() as cur:
-        cur.execute(
-            f"SELECT COUNT(*) FROM {schema}.metadata WHERE search_dir LIKE %s",
-            (search_dir,),
-        )
-        count_before = cur.fetchone()[0]
+    with psycopg.connect(conninfo) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(*) FROM {schema}.metadata WHERE search_dir LIKE %s",
+                (search_dir,),
+            )
+            count_before = cur.fetchone()[0]
 
-    print(f"Rows before drop: {count_before}")
+        print(f"Rows before drop: {count_before}")
 
-    with conn.cursor() as cur:
-        cur.execute(
-            f"DELETE FROM {schema}.metadata WHERE search_dir LIKE %s", (search_dir,)
-        )
-        print(f"Deleted {cur.rowcount} rows")
-    conn.commit()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"DELETE FROM {schema}.metadata WHERE search_dir LIKE %s", (search_dir,)
+            )
+            print(f"Deleted {cur.rowcount} rows")
+        conn.commit()
 
-    with conn.cursor() as cur:
-        cur.execute(
-            f"SELECT COUNT(*) FROM {schema}.metadata WHERE search_dir LIKE %s",
-            (search_dir,),
-        )
-        count_after = cur.fetchone()[0]
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(*) FROM {schema}.metadata WHERE search_dir LIKE %s",
+                (search_dir,),
+            )
+            count_after = cur.fetchone()[0]
 
-    print(f"Rows after drop: {count_after}")
+        print(f"Rows after drop: {count_after}")
 
 
 def drop_partition(
-    conn: psycopg.Connection,
+    conninfo: str,
     table: str,
     partition_key: str,
     schema: str,
 ) -> None:
     """
     Delete records matching partition key from table
+
+    Args:
+        conninfo: PostgreSQL connection string (e.g. "postgresql://user:pass@host/db")
     """
     print(
         f"Running: DELETE FROM {schema}.{table} WHERE full_path LIKE '{partition_key}'"
     )
 
-    with conn.cursor() as cur:
-        cur.execute(
-            f"DELETE FROM {schema}.{table} WHERE full_path LIKE %s", (partition_key,)
-        )
-        print(f"Deleted {cur.rowcount} rows")
-    conn.commit()
+    with psycopg.connect(conninfo) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"DELETE FROM {schema}.{table} WHERE full_path LIKE %s", (partition_key,)
+            )
+            print(f"Deleted {cur.rowcount} rows")
+        conn.commit()
 
     # PostgreSQL doesn't need vacuum the same way Spark does
     # VACUUM reclaims storage, but happens automatically in most cases
@@ -1596,26 +1625,30 @@ def drop_partition(
 
 
 def drop_file_from_metadata_and_table(
-    conn: psycopg.Connection,
+    conninfo: str,
     table: str,
     full_path: str,
     schema: str,
 ) -> None:
     """
     Remove a file from both metadata and data table
+
+    Args:
+        conninfo: PostgreSQL connection string (e.g. "postgresql://user:pass@host/db")
     """
     full_path = Path(full_path).as_posix()
 
     # Delete from metadata
-    with conn.cursor() as cur:
-        cur.execute(
-            f"DELETE FROM {schema}.metadata WHERE full_path = %s", (full_path,)
-        )
-        print(f"Deleted {cur.rowcount} rows from metadata")
-    conn.commit()
+    with psycopg.connect(conninfo) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"DELETE FROM {schema}.metadata WHERE full_path = %s", (full_path,)
+            )
+            print(f"Deleted {cur.rowcount} rows from metadata")
+        conn.commit()
 
     # Delete from data table
-    drop_partition(conn=conn, table=table, partition_key=full_path, schema=schema)
+    drop_partition(conninfo=conninfo, table=table, partition_key=full_path, schema=schema)
 
 
 # CLI SCHEMA INFERENCE FUNCTIONS

@@ -19,10 +19,11 @@ def _():
 
 @app.cell
 def _(Path, mo, psycopg):
-    # Connect to PostgreSQL with psycopg3
-    conn = psycopg.connect(
-        "postgresql://tanner@localhost:5432/postgres", autocommit=False
-    )
+    # Connection string for all database operations
+    conninfo = "postgresql://tanner@localhost:5432/postgres"
+
+    # Create a connection for mo.sql() queries
+    conn = psycopg.connect(conninfo, autocommit=False)
 
     # Setup paths
     base_dir = Path(__file__).parent.parent  # Go up to project root
@@ -44,7 +45,7 @@ def _(Path, mo, psycopg):
     with conn.cursor() as _cur:
         _cur.execute("CREATE SCHEMA IF NOT EXISTS raw")
     conn.commit()
-    return conn, landing_dir, mo, search_dir
+    return conn, conninfo, landing_dir, mo, search_dir
 
 
 @app.cell
@@ -100,11 +101,11 @@ def _():
 
 
 @app.cell
-def _(add_files_to_metadata_table, conn, landing_dir, search_dir):
+def _(add_files_to_metadata_table, conninfo, landing_dir, search_dir):
     # Extract DHC files from ZIP and add to metadata
     # DHC files are pipe-delimited (.dhc extension)
     add_files_to_metadata_table(
-        conn=conn,
+        conninfo=conninfo,
         schema="raw",
         search_dir=str(search_dir),
         landing_dir=str(landing_dir),
@@ -119,7 +120,7 @@ def _(add_files_to_metadata_table, conn, landing_dir, search_dir):
 
 
 @app.cell
-def _(column_mapping, conn, landing_dir, update_table):
+def _(column_mapping, conninfo, landing_dir, update_table):
     # Ingest the extracted DHC files
     # Derive header from column mapping keys (excluding 'default')
     def dhc_header_fn(file):
@@ -128,7 +129,7 @@ def _(column_mapping, conn, landing_dir, update_table):
 
 
     update_table(
-        conn=conn,
+        conninfo=conninfo,
         schema="raw",
         output_table="dhc_2020",
         filetype="psv",  # Pipe-separated values
