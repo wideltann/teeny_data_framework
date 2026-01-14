@@ -39,9 +39,9 @@ python src/table_functions_postgres.py data/raw/earthquakes.csv --pretty
 # 2. Copy the JSON output and paste as column_mapping in your notebook:
 column_mapping = {
   "time": [[], "string"],
-  "latitude": [[], "float64"],
-  "longitude": [[], "float64"],
-  "mag": [[], "float64"],
+  "latitude": [[], "float"],
+  "longitude": [[], "float"],
+  "mag": [[], "float"],
   # ... rest of output
 }
 
@@ -68,16 +68,16 @@ The CLI outputs JSON in the exact `column_mapping` format with **automatic snake
 **Column Name Conversion:**
 - Column names are automatically converted to `snake_case`
 - Original column name is included in the array (e.g., `"FirstName"` becomes `"first_name": [["FirstName"], "string"]`)
-- If the column is already in snake_case, the array is empty (e.g., `"user_id": [[], "Int64"]`)
+- If the column is already in snake_case, the array is empty (e.g., `"user_id": [[], "int"]`)
 - This allows the framework to match either the snake_case name or the original name when reading files
 
 **Examples:**
 - `"FirstName"` → `"first_name": [["FirstName"], "string"]`
-- `"User ID"` → `"user_id": [["User ID"], "Int64"]`
-- `"totalAmount"` → `"total_amount": [["totalAmount"], "float64"]`
-- `"user_id"` → `"user_id": [[], "Int64"]` (already snake_case)
+- `"User ID"` → `"user_id": [["User ID"], "int"]`
+- `"totalAmount"` → `"total_amount": [["totalAmount"], "float"]`
+- `"user_id"` → `"user_id": [[], "int"]` (already snake_case)
 
-**Type strings:** `Int64`, `float64`, `boolean`, `datetime64[ns]`, `string`
+**Type strings:** `int`, `float`, `boolean`, `datetime`, `string`
 
 ## Key Patterns to Follow
 
@@ -89,7 +89,7 @@ For headerless files, **ALWAYS derive the header from column_mapping**. Never du
 # Define column mapping
 column_mapping = {
     "col1": ([], "string"),
-    "col2": ([], "float64"),
+    "col2": ([], "float"),
     "default": ([], "string"),
 }
 

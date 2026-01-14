@@ -5,13 +5,19 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "adbc-driver-postgresql>=1.10.0",
   "boto3>=1.42.25",
+  "duckdb>=1.4.3",
+  "fastexcel>=0.18.0",
   "marimo>=0.19.1",
   "openpyxl>=3.1.5",
   "pandas>=2.3.3",
+  "polars>=1.37.1",
   "psycopg>=3.3.2",
   "psycopg-binary>=3.3.2",
   "pyarrow>=22.0.0",
+  "sqlglot>=28.6.0",
+  "xlsxwriter>=3.2.9",
 ]
 
 [dependency-groups]
