@@ -1,71 +1,14 @@
 """
-Data ingestion framework using Polars and PostgreSQL via ADBC
+Data ingestion framework using pandas and PostgreSQL
+Pure psycopg implementation for efficient bulk loading
 """
 
-import polars as pl
-import adbc_driver_postgresql.dbapi as pg_dbapi
+import pandas as pd
+import numpy as np
+import psycopg
 import json
 from typing import Dict, List, Tuple, Optional, Callable, Any
 from pathlib import Path
-from contextlib import contextmanager
-
-
-# Connection management
-
-
-@contextmanager
-def get_connection(uri: str):
-    """
-    Context manager for ADBC PostgreSQL connections.
-
-    Args:
-        uri: PostgreSQL connection URI (e.g., "postgresql://user:pass@host:port/db")
-
-    Yields:
-        ADBC connection object
-    """
-    conn = pg_dbapi.connect(uri)
-    try:
-        yield conn
-    finally:
-        conn.close()
-
-
-def execute_sql(uri: str, sql: str, params: Optional[tuple] = None) -> None:
-    """Execute a SQL statement that doesn't return results (DDL, DML)"""
-    with get_connection(uri) as conn:
-        with conn.cursor() as cur:
-            if params:
-                cur.execute(sql, params)
-            else:
-                cur.execute(sql)
-        conn.commit()
-
-
-def execute_sql_fetch(
-    uri: str, sql: str, params: Optional[tuple] = None
-) -> List[tuple]:
-    """Execute a SQL statement and return all results"""
-    with get_connection(uri) as conn:
-        with conn.cursor() as cur:
-            if params:
-                cur.execute(sql, params)
-            else:
-                cur.execute(sql)
-            return cur.fetchall()
-
-
-def execute_sql_fetchone(
-    uri: str, sql: str, params: Optional[tuple] = None
-) -> Optional[tuple]:
-    """Execute a SQL statement and return first result"""
-    with get_connection(uri) as conn:
-        with conn.cursor() as cur:
-            if params:
-                cur.execute(sql, params)
-            else:
-                cur.execute(sql)
-            return cur.fetchone()
 
 
 # S3 Helper Functions
@@ -168,14 +111,14 @@ def prepare_column_mapping(
 
     Returns:
         rename_dict: Maps original column names to new names
-        read_dtypes: Maps original column names to their types (for reading)
+        read_dtypes: Maps original column names to their types (for pd.read_*)
         missing_cols: Columns to add with their types
 
     Example:
         column_mapping = {
             "block_fips": ([], "string"),              # Keep name as-is
-            "pop": (["POP100", "population"], "Int64"), # Rename if found
-            "default": ([], "float64"),                # Type for unmapped cols
+            "pop": (["POP100", "population"], "int"),  # Rename if found
+            "default": ([], "float"),                  # Type for unmapped cols
         }
     """
     rename_dict = {}
@@ -197,7 +140,7 @@ def prepare_column_mapping(
 
         if found_name:
             processed_cols.add(found_name)
-            read_dtypes[found_name] = dtype
+            read_dtypes[found_name] = _dtype_str_to_pandas(dtype)
             if found_name != target_name:
                 rename_dict[found_name] = target_name
         else:
@@ -208,45 +151,48 @@ def prepare_column_mapping(
     if default_type:
         for col in header:
             if col not in processed_cols:
-                read_dtypes[col] = default_type
+                read_dtypes[col] = _dtype_str_to_pandas(default_type)
 
     return rename_dict, read_dtypes, missing_cols
 
 
-def _dtype_str_to_polars(dtype_str: str) -> pl.DataType:
-    """Convert dtype string to Polars dtype.
+def _dtype_str_to_pandas(dtype_str: str) -> str:
+    """Convert simplified dtype string to pandas dtype.
 
     Type mappings:
-        int -> pl.Int64
-        float -> pl.Float64
-        boolean -> pl.Boolean
-        datetime -> pl.Datetime
-        string -> pl.Utf8
+        int -> Int64 (nullable)
+        float -> float64
+        boolean -> boolean
+        datetime -> datetime64[ns]
+        string -> string
     """
     dtype_lower = dtype_str.lower()
     if dtype_lower == "int":
-        return pl.Int64
+        return "Int64"
     elif dtype_lower == "float":
-        return pl.Float64
+        return "float64"
     elif dtype_lower == "boolean":
-        return pl.Boolean
+        return "boolean"
     elif dtype_lower == "datetime":
-        return pl.Datetime
+        return "datetime64[ns]"
     elif dtype_lower == "string":
-        return pl.Utf8
+        return "string"
     else:
-        return pl.Utf8
+        # Pass through pandas types directly (Int64, float64, etc.)
+        return dtype_str
 
 
 def _apply_column_transforms(
-    df: pl.DataFrame, rename_dict: Dict[str, str], missing_cols: Dict[str, str]
-) -> pl.DataFrame:
+    df: pd.DataFrame, rename_dict: Dict[str, str], missing_cols: Dict[str, str]
+) -> pd.DataFrame:
     """Apply column renames and add missing columns with proper types"""
     if rename_dict:
-        df = df.rename(rename_dict)
+        df = df.rename(columns=rename_dict)
     for col_name, col_type in missing_cols.items():
-        polars_type = _dtype_str_to_polars(col_type)
-        df = df.with_columns(pl.lit(None).cast(polars_type).alias(col_name))
+        df[col_name] = None
+        pandas_type = _dtype_str_to_pandas(col_type)
+        if pandas_type != "object":
+            df[col_name] = df[col_name].astype(pandas_type)
     return df
 
 
@@ -254,34 +200,22 @@ def read_xlsx(
     full_path: Optional[str] = None,
     column_mapping: Optional[Dict[str, Tuple[List[str], str]]] = None,
     excel_skiprows: int = 0,
-) -> pl.DataFrame:
+) -> pd.DataFrame:
     """
-    Read Excel file and return polars DataFrame with proper column mapping
+    Read Excel file and return pandas DataFrame with proper column mapping
 
     Args:
         full_path: Path to Excel file
         column_mapping: Column mapping dictionary
         excel_skiprows: Number of rows to skip at the beginning (for label rows before data)
     """
-    # Read Excel file with polars
-    # Note: polars uses 0-based indexing for read_excel
-    df = pl.read_excel(full_path, read_options={"skip_rows": excel_skiprows})
-    header = df.columns
+    header = pd.read_excel(full_path, skiprows=excel_skiprows, nrows=1).columns.tolist()
 
     # Process column mapping to get rename dict, dtypes, and missing columns
     rename_dict, read_dtypes, missing_cols = prepare_column_mapping(
         header, column_mapping
     )
-
-    # Apply type casts where needed
-    cast_exprs = []
-    for col_name, dtype_str in read_dtypes.items():
-        if col_name in df.columns:
-            polars_type = _dtype_str_to_polars(dtype_str)
-            cast_exprs.append(pl.col(col_name).cast(polars_type))
-
-    if cast_exprs:
-        df = df.with_columns(cast_exprs)
+    df = pd.read_excel(full_path, skiprows=excel_skiprows, dtype=read_dtypes)
 
     return _apply_column_transforms(df, rename_dict, missing_cols)
 
@@ -289,15 +223,15 @@ def read_xlsx(
 def read_parquet(
     full_path: Optional[str] = None,
     column_mapping: Optional[Dict[str, Tuple[List[str], str]]] = None,
-) -> pl.DataFrame:
+) -> pd.DataFrame:
     """
-    Read parquet file and return polars DataFrame with column mapping
+    Read parquet file and return pandas DataFrame with column mapping
     """
-    df = pl.read_parquet(full_path)
+    df = pd.read_parquet(full_path)
 
     # Prepare column transformations (parquet already has type info)
     rename_dict, _, missing_cols = prepare_column_mapping(
-        header=df.columns, column_mapping=column_mapping
+        header=df.columns.tolist(), column_mapping=column_mapping
     )
 
     # Keep only mapped columns (drop unmapped unless there's a default type)
@@ -305,7 +239,7 @@ def read_parquet(
         keep_cols = [
             col for col in df.columns if col in rename_dict or col in column_mapping
         ]
-        df = df.select(keep_cols)
+        df = df[keep_cols]
 
     return _apply_column_transforms(df, rename_dict, missing_cols)
 
@@ -318,9 +252,11 @@ def read_csv(
     null_value: Optional[str] = None,
     separator: str = ",",
     encoding: str = "utf-8-sig",
-) -> pl.DataFrame:
+) -> pd.DataFrame:
     """
-    Read CSV file and return polars DataFrame with proper schema and column mapping
+    Read CSV file and return pandas DataFrame with proper schema and column mapping.
+
+    Supports any encoding that Python's codecs module supports (cp1252, latin1, etc.)
     """
     if not header:
         # some files start with a BOM (byte-order-mark)
@@ -336,58 +272,16 @@ def read_csv(
         header, column_mapping
     )
 
-    # Build polars schema from read_dtypes
-    schema_overrides = {}
-    for col_name, dtype_str in read_dtypes.items():
-        schema_overrides[col_name] = _dtype_str_to_polars(dtype_str)
-
-    # Handle null values
-    null_values = [null_value] if null_value is not None else None
-
-    # Handle encoding for polars
-    polars_encoding = encoding.replace("-sig", "").replace("-", "")
-    if polars_encoding.lower() not in ["utf8", "utf-8"]:
-        polars_encoding = "utf8-lossy"
-
-    # Read CSV with polars
-    try:
-        df = pl.read_csv(
-            full_path,
-            separator=separator,
-            has_header=has_header,
-            new_columns=header if not has_header else None,
-            null_values=null_values,
-            encoding=polars_encoding,
-            schema_overrides=schema_overrides,
-            infer_schema_length=10000,
-        )
-    except Exception:
-        # Fallback: read as strings first, then cast
-        df = pl.read_csv(
-            full_path,
-            separator=separator,
-            has_header=has_header,
-            new_columns=header if not has_header else None,
-            null_values=null_values,
-            encoding=polars_encoding,
-            infer_schema_length=0,  # Read all as strings
-        )
-        # Apply casts
-        cast_exprs = []
-        for col_name, dtype_str in read_dtypes.items():
-            if col_name in df.columns:
-                polars_type = _dtype_str_to_polars(dtype_str)
-                if polars_type in (pl.Int64, pl.Float64):
-                    # For numeric types, handle casting carefully
-                    cast_exprs.append(
-                        pl.col(col_name)
-                        .str.strip_chars()
-                        .cast(polars_type, strict=False)
-                    )
-                else:
-                    cast_exprs.append(pl.col(col_name).cast(polars_type, strict=False))
-        if cast_exprs:
-            df = df.with_columns(cast_exprs)
+    df = pd.read_csv(
+        full_path,
+        sep=separator,
+        header=0 if has_header else None,
+        names=header if not has_header else None,
+        dtype=read_dtypes,
+        na_values=null_value,
+        keep_default_na=False if null_value == "" else True,
+        encoding=encoding,
+    )
 
     return _apply_column_transforms(df, rename_dict, missing_cols)
 
@@ -395,48 +289,41 @@ def read_csv(
 def read_fixed_width(
     full_path: Optional[str] = None,
     column_mapping: Optional[Dict[str, Tuple[str, int, int]]] = None,
-) -> pl.DataFrame:
+    encoding: str = "utf-8",
+) -> pd.DataFrame:
     """
-    Read fixed-width file and return polars DataFrame
+    Read fixed-width file and return pandas DataFrame using pd.read_fwf
 
     column_mapping format:
     {'stusab': ('string', 7, 2),
-     'sumlev': ('float64', 9, 3),
+     'sumlev': ('float', 9, 3),
      'geocomp': ('string', 12, 2)}
 
     {'column_name': (type, starting_position, field_size)}
+
+    Note: starting_position is 1-indexed (first character is position 1)
     """
-    # Read as text file
-    with open(full_path, "r") as f:
-        lines = f.readlines()
+    # Build colspecs for pandas read_fwf
+    # colspecs is a list of (start, end) tuples, 0-indexed
+    colspecs = []
+    names = []
+    dtypes = {}
 
-    data = {}
-    for col_name, value in column_mapping.items():
-        col_type, starting_position, field_size = value
+    for col_name, (col_type, start_pos, field_size) in column_mapping.items():
+        # Convert 1-indexed to 0-indexed
+        start_idx = start_pos - 1
+        end_idx = start_idx + field_size
+        colspecs.append((start_idx, end_idx))
+        names.append(col_name)
+        dtypes[col_name] = _dtype_str_to_pandas(col_type)
 
-        # Extract column data (1-indexed position converted to 0-indexed)
-        col_data = []
-        for line in lines:
-            # Extract substring and trim
-            value_str = line[
-                starting_position - 1 : starting_position - 1 + field_size
-            ].strip()
-            # Convert empty strings to None
-            col_data.append(None if value_str == "" else value_str)
-
-        data[col_name] = col_data
-
-    df = pl.DataFrame(data)
-
-    # Cast to proper types
-    cast_exprs = []
-    for col_name, value in column_mapping.items():
-        col_type = value[0]
-        if col_type != "object" and col_type != "string":
-            cast_exprs.append(pl.col(col_name).cast(pl.Float64, strict=False))
-
-    if cast_exprs:
-        df = df.with_columns(cast_exprs)
+    df = pd.read_fwf(
+        full_path,
+        colspecs=colspecs,
+        names=names,
+        dtype=dtypes,
+        encoding=encoding,
+    )
 
     return df
 
@@ -450,7 +337,7 @@ def read_using_column_mapping(
     null_value: Optional[str] = None,
     excel_skiprows: int = 0,
     encoding: str = "utf-8-sig",
-) -> Optional[pl.DataFrame]:
+) -> Optional[pd.DataFrame]:
     """
     Router function to read different file types with column mapping
     """
@@ -494,7 +381,11 @@ def read_using_column_mapping(
         case "parquet":
             return read_parquet(full_path=full_path, column_mapping=column_mapping)
         case "fixed_width":
-            return read_fixed_width(full_path=full_path, column_mapping=column_mapping)
+            return read_fixed_width(
+                full_path=full_path,
+                column_mapping=column_mapping,
+                encoding=encoding,
+            )
         case _:
             raise ValueError(
                 f"Invalid filetype: {filetype}. "
@@ -502,20 +393,23 @@ def read_using_column_mapping(
             )
 
 
-def table_exists(uri: str, schema: str, table: str) -> bool:
+def table_exists(conn: psycopg.Connection, schema: str, table: str) -> bool:
     """Check if a table exists in the database"""
-    sql = """
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables
-            WHERE table_schema = $1 AND table_name = $2
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = %s
+            )
+            """,
+            (schema, table),
         )
-    """
-    result = execute_sql_fetchone(uri, sql, (schema, table))
-    return result[0] if result else False
+        return cur.fetchone()[0]
 
 
 def _infer_postgres_type(dtype: Any) -> str:
-    """Infer PostgreSQL type from polars dtype"""
+    """Infer PostgreSQL type from pandas dtype"""
     dtype_str = str(dtype).lower()
     if "int" in dtype_str:
         return "BIGINT"
@@ -530,7 +424,7 @@ def _infer_postgres_type(dtype: Any) -> str:
 
 
 def _infer_column_mapping_type(dtype: Any) -> str:
-    """Infer column_mapping type string from polars dtype"""
+    """Infer column_mapping type string from pandas dtype"""
     dtype_str = str(dtype).lower()
     if "int" in dtype_str:
         return "int"
@@ -544,34 +438,42 @@ def _infer_column_mapping_type(dtype: Any) -> str:
         return "string"
 
 
-def get_table_schema(uri: str, schema: str, table: str) -> Dict[str, str]:
+def get_table_schema(
+    conn: psycopg.Connection, schema: str, table: str
+) -> Dict[str, str]:
     """
     Get existing table schema from PostgreSQL
 
     Returns:
         Dict mapping column names to PostgreSQL types
     """
-    sql = """
+    query = """
         SELECT column_name, data_type
         FROM information_schema.columns
-        WHERE table_schema = $1 AND table_name = $2
+        WHERE table_schema = %s AND table_name = %s
         ORDER BY ordinal_position
     """
-    rows = execute_sql_fetch(uri, sql, (schema, table))
+
+    with conn.cursor() as cur:
+        cur.execute(query, (schema, table))
+        rows = cur.fetchall()
+
     return {row[0]: row[1] for row in rows}
 
 
-def validate_schema_match(uri: str, df: pl.DataFrame, schema: str, table: str) -> None:
+def validate_schema_match(
+    conn: psycopg.Connection, df: pd.DataFrame, schema: str, table: str
+) -> None:
     """
     Validate that DataFrame schema matches existing table schema
 
     Raises:
         ValueError: If schemas don't match
     """
-    if not table_exists(uri, schema, table):
+    if not table_exists(conn, schema, table):
         return  # No validation needed for new tables
 
-    existing_schema = get_table_schema(uri, schema, table)
+    existing_schema = get_table_schema(conn, schema, table)
     df_columns = set(df.columns)
     table_columns = set(existing_schema.keys())
 
@@ -596,7 +498,7 @@ def validate_schema_match(uri: str, df: pl.DataFrame, schema: str, table: str) -
         )
 
     # Validate column types match
-    # Map polars types to PostgreSQL equivalents for comparison
+    # Map pandas types to PostgreSQL equivalents for comparison
     type_mismatches = []
     for col in df.columns:
         expected_pg_type = _infer_postgres_type(df[col].dtype)
@@ -627,7 +529,7 @@ def validate_schema_match(uri: str, df: pl.DataFrame, schema: str, table: str) -
 
 
 def create_table_from_dataframe(
-    uri: str, df: pl.DataFrame, schema: str, table: str
+    conn: psycopg.Connection, df: pd.DataFrame, schema: str, table: str
 ) -> None:
     """Create table from DataFrame schema if it doesn't exist"""
     # Build column definitions
@@ -643,47 +545,62 @@ def create_table_from_dataframe(
         )
     """
 
-    execute_sql(uri, create_sql)
+    with conn.cursor() as cur:
+        cur.execute(create_sql)
 
 
 def copy_dataframe_to_table(
-    uri: str, df: pl.DataFrame, schema: str, table: str
+    conn: psycopg.Connection, df: pd.DataFrame, schema: str, table: str
 ) -> None:
     """
-    Bulk load DataFrame to PostgreSQL using Polars write_database with ADBC.
+    Bulk load DataFrame to PostgreSQL using COPY with write_row()
+    This is the recommended psycopg3 approach - cleaner and more memory efficient
 
-    This uses Arrow-native data transfer for optimal performance.
+    Note: The entire DataFrame must already be loaded in memory. This function
+    does not chunk - it processes the full DataFrame that was loaded by the caller.
 
     Raises:
         ValueError: If table exists but schema doesn't match DataFrame
     """
     # Validate schema matches if table exists
-    validate_schema_match(uri, df, schema, table)
+    validate_schema_match(conn, df, schema, table)
 
     # Ensure table exists (creates if not exists)
-    create_table_from_dataframe(uri, df, schema, table)
+    create_table_from_dataframe(conn, df, schema, table)
 
-    # Use Polars native write_database with ADBC for efficient bulk insert
-    df.write_database(
-        table_name=f"{schema}.{table}",
-        connection=uri,
-        engine="adbc",
-        if_table_exists="append",
-    )
+    # Replace pandas NA/NaT with None for psycopg3 compatibility
+    # This handles pd.NA, pd.NaT, and np.nan
+    df = df.fillna(value=np.nan).replace({np.nan: None})
+
+    # Quote column names to preserve case sensitivity
+    columns = ", ".join(f'"{col}"' for col in df.columns)
+    copy_sql = f"COPY {schema}.{table} ({columns}) FROM STDIN"
+
+    with conn.cursor() as cur:
+        with cur.copy(copy_sql) as copy:
+            # Use itertuples for efficient row iteration
+            # index=False excludes the index, name=None returns plain tuples
+            # NOTE: This iterates over the full DataFrame already in memory (not chunked)
+            for row in df.itertuples(index=False, name=None):
+                copy.write_row(row)
 
 
 def row_count_check(
-    uri: str,
+    conn: psycopg.Connection,
     schema: str,
-    df: pl.DataFrame,
+    df: pd.DataFrame,
     full_path: str,
     unpivot_row_multiplier: Optional[int] = None,
 ) -> None:
     """
     Sanity check on flat file ingest comparing metadata row count to DataFrame row count
     """
-    sql = f"SELECT row_count FROM {schema}.metadata WHERE full_path = $1"
-    result = execute_sql_fetchone(uri, sql, (full_path,))
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT row_count FROM {schema}.metadata WHERE full_path = %s",
+            (full_path,),
+        )
+        result = cur.fetchone()
 
     metadata_row_count = result[0] if result else None
     output_df_row_count = len(df)
@@ -704,7 +621,7 @@ def row_count_check(
 
 
 def update_metadata(
-    uri: str,
+    conn: psycopg.Connection,
     full_path: str,
     schema: str,
     error_message: Optional[str] = None,
@@ -728,40 +645,31 @@ def update_metadata(
 
     print(f"Updating metadata for {full_path}: {status}")
 
-    # Build SQL dynamically to avoid ADBC issues with None parameters
-    # ADBC has issues mapping None to PostgreSQL types
-    set_clauses = [
-        f"ingest_datetime = '{metadata_ingest_datetime}'",
-        f"status = '{status}'",
-    ]
-
-    if error_message is not None:
-        # Escape single quotes in error message
-        escaped_error = error_message.replace("'", "''")
-        set_clauses.append(f"error_message = '{escaped_error}'")
-    else:
-        set_clauses.append("error_message = NULL")
-
-    if unpivot_row_multiplier is not None:
-        set_clauses.append(f"unpivot_row_multiplier = {unpivot_row_multiplier}")
-
-    if ingest_runtime is not None:
-        set_clauses.append(f"ingest_runtime = {ingest_runtime}")
-
-    # Escape single quotes in full_path
-    escaped_full_path = full_path.replace("'", "''")
-
-    sql = f"""
-        UPDATE {schema}.metadata
-        SET {", ".join(set_clauses)}
-        WHERE full_path = '{escaped_full_path}'
-    """
-
-    execute_sql(uri, sql)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {schema}.metadata
+            SET
+                ingest_datetime = %s,
+                status = %s,
+                error_message = %s,
+                unpivot_row_multiplier = %s,
+                ingest_runtime = %s
+            WHERE full_path = %s
+            """,
+            (
+                metadata_ingest_datetime,
+                status,
+                error_message,
+                unpivot_row_multiplier,
+                ingest_runtime,
+                full_path,
+            ),
+        )
 
 
 def update_table(
-    uri: Optional[str] = None,
+    conn: Optional[psycopg.Connection] = None,
     resume: bool = False,
     retry_failed: bool = False,
     sample: Optional[int] = None,
@@ -771,8 +679,8 @@ def update_table(
     output_table_naming_fn: Optional[Callable[[Path], str]] = None,
     additional_cols_fn: Optional[Callable[[Path], Dict[str, Any]]] = None,
     file_list_filter_fn: Optional[Callable[[List[Path]], List[Path]]] = None,
-    custom_read_fn: Optional[Callable[[str], pl.DataFrame]] = None,
-    transform_fn: Optional[Callable[[pl.DataFrame], pl.DataFrame]] = None,
+    custom_read_fn: Optional[Callable[[str], pd.DataFrame]] = None,
+    transform_fn: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
     landing_dir: Optional[str] = None,
     sql_glob: Optional[str] = None,
     filetype: Optional[str] = None,
@@ -786,20 +694,20 @@ def update_table(
     excel_skiprows: int = 0,
     encoding: str = "utf-8-sig",
     filesystem: Optional[Any] = None,
-) -> pl.DataFrame:
+) -> pd.DataFrame:
     """
     Main ingestion function that reads files and writes to PostgreSQL
     """
     import time
 
-    required_params = [landing_dir, schema, uri, filetype]
+    required_params = [landing_dir, schema, conn, filetype]
     if not custom_read_fn and not column_mapping_fn:
         required_params.append(column_mapping)
 
     if any(param is None for param in required_params):
         print(f"Missing required parameters: {required_params}")
         raise ValueError(
-            "Required params: landing_dir, filetype, column_mapping, schema, uri. Column mapping not required if using custom_read_fn or if using column_mapping_fn"
+            "Required params: landing_dir, filetype, column_mapping, schema, conn. Column mapping not required if using custom_read_fn or if using column_mapping_fn"
         )
 
     # Normalize landing_dir to string with trailing slash for LIKE query
@@ -814,14 +722,16 @@ def update_table(
         SELECT full_path
         FROM {metadata_schema}.metadata
         WHERE
-            landing_dir LIKE $1 AND
-            full_path LIKE $2 AND
+            landing_dir LIKE %s AND
+            full_path LIKE %s AND
             metadata_ingest_status = 'Success'
     """
 
     print(f"Metadata file search query: {sql}")
 
-    rows = execute_sql_fetch(uri, sql, (landing_dir, sql_glob))
+    with conn.cursor() as cur:
+        cur.execute(sql, (landing_dir, sql_glob))
+        rows = cur.fetchall()
     file_list = sorted([row[0] for row in rows])
 
     if file_list_filter_fn:
@@ -832,12 +742,14 @@ def update_table(
             SELECT full_path
             FROM {metadata_schema}.metadata
             WHERE
-                landing_dir LIKE $1 AND
+                landing_dir LIKE %s AND
                 ingest_datetime IS NOT NULL
                 {"AND status = 'Success'" if not retry_failed else ""}
         """
 
-        rows = execute_sql_fetch(uri, sql, (landing_dir,))
+        with conn.cursor() as cur:
+            cur.execute(sql, (landing_dir,))
+            rows = cur.fetchall()
         full_path_list = set(row[0] for row in rows)
         file_list = [f for f in file_list if f not in full_path_list]
 
@@ -902,16 +814,16 @@ def update_table(
                 value_vars = [col for col in df.columns if col not in id_vars]
                 unpivot_row_multiplier = len(value_vars)
 
-                df = df.unpivot(
-                    index=id_vars,
-                    on=value_vars,
-                    variable_name=pivot_mapping["variable_column_name"],
+                df = df.melt(
+                    id_vars=id_vars,
+                    value_vars=value_vars,
+                    var_name=pivot_mapping["variable_column_name"],
                     value_name=pivot_mapping["value_column_name"],
                 )
 
             # Raises exception on failure
             row_count_check(
-                uri=uri,
+                conn=conn,
                 schema=metadata_schema,
                 df=df,
                 full_path=full_path,
@@ -924,9 +836,9 @@ def update_table(
             if additional_cols_fn:
                 additional_cols_dict = additional_cols_fn(file)
                 for col_name, col_value in additional_cols_dict.items():
-                    df = df.with_columns(pl.lit(col_value).alias(col_name))
+                    df[col_name] = col_value
 
-            df = df.with_columns(pl.lit(full_path).alias("full_path"))
+            df["full_path"] = full_path
 
             # Write to PostgreSQL
             table_name = (
@@ -934,32 +846,38 @@ def update_table(
             )
 
             # Check if table exists and delete existing records for this file
-            if table_exists(uri, schema, table_name):
-                delete_sql = f"DELETE FROM {schema}.{table_name} WHERE full_path = $1"
-                execute_sql(uri, delete_sql, (full_path,))
+            if table_exists(conn, schema, table_name):
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"DELETE FROM {schema}.{table_name} WHERE full_path = %s",
+                        (full_path,),
+                    )
 
-            # Bulk load using Polars write_database
-            copy_dataframe_to_table(uri, df, schema, table_name)
+            # Bulk load using COPY
+            copy_dataframe_to_table(conn, df, schema, table_name)
+            conn.commit()
 
             ingest_runtime = int(time.time() - start_time)
 
             update_metadata(
-                uri=uri,
+                conn=conn,
                 full_path=full_path,
                 schema=metadata_schema,
                 unpivot_row_multiplier=unpivot_row_multiplier,
                 ingest_runtime=ingest_runtime,
             )
+            conn.commit()
         except Exception as e:
             error_str = str(e)
 
             update_metadata(
-                uri=uri,
+                conn=conn,
                 full_path=full_path,
                 schema=metadata_schema,
                 error_message=error_str,
                 unpivot_row_multiplier=unpivot_row_multiplier,
             )
+            conn.commit()
 
             # Truncate error for printing
             if len(error_str) > 200:
@@ -970,18 +888,19 @@ def update_table(
             if temp_file_path and temp_file_path.exists():
                 temp_file_path.unlink()
 
-    # Return metadata results using Polars read_database
+    # Return metadata results
     sql = f"""
         SELECT *
         FROM {metadata_schema}.metadata
-        WHERE landing_dir LIKE $1 AND full_path LIKE $2
+        WHERE landing_dir LIKE %s AND full_path LIKE %s
         ORDER BY ingest_datetime DESC
     """
 
-    df = pl.read_database_uri(
-        sql, uri, engine="adbc", execute_options={"parameters": (landing_dir, sql_glob)}
-    )
-    return df
+    with conn.cursor() as cur:
+        cur.execute(sql, (landing_dir, sql_glob))
+        columns = [desc[0] for desc in cur.description]
+        rows = cur.fetchall()
+        return pd.DataFrame(rows, columns=columns)
 
 
 # START OF METADATA FUNCTIONS #
@@ -1422,10 +1341,10 @@ def get_file_metadata_row(
                     file=read_file, has_header=False, encoding=encoding
                 )
             case "xlsx":
-                df = pl.read_excel(read_file)
+                df = pd.read_excel(read_file)
                 header, row_count = list(df.columns), len(df)
             case "parquet":
-                df = pl.read_parquet(read_file)
+                df = pd.read_parquet(read_file)
                 header, row_count = list(df.columns), len(df)
             case "xml":
                 # there isnt really a standard way of getting these values
@@ -1451,7 +1370,9 @@ def get_file_metadata_row(
     return row
 
 
-def add_files_to_metadata_table(uri: str, **kwargs: Any) -> pl.DataFrame:
+def add_files_to_metadata_table(
+    conn: psycopg.Connection, **kwargs: Any
+) -> pd.DataFrame:
     """
     Add files to metadata table, creating it if necessary
     """
@@ -1505,7 +1426,7 @@ def add_files_to_metadata_table(uri: str, **kwargs: Any) -> pl.DataFrame:
     output_table = f"{schema}.metadata"
 
     # Create metadata table if it doesn't exist
-    if not table_exists(uri, schema, "metadata"):
+    if not table_exists(conn, schema, "metadata"):
         create_table_sql = f"""
             CREATE TABLE {output_table} (
                 search_dir TEXT,
@@ -1525,7 +1446,9 @@ def add_files_to_metadata_table(uri: str, **kwargs: Any) -> pl.DataFrame:
                 unpivot_row_multiplier INTEGER
             )
         """
-        execute_sql(uri, create_table_sql)
+        with conn.cursor() as cur:
+            cur.execute(create_table_sql)
+        conn.commit()
 
     resume = kwargs.get("resume", False)
     retry_failed = kwargs.pop("retry_failed", False)
@@ -1536,12 +1459,14 @@ def add_files_to_metadata_table(uri: str, **kwargs: Any) -> pl.DataFrame:
             SELECT full_path
             FROM {output_table}
             WHERE
-                search_dir LIKE $1 AND
-                full_path LIKE $2
+                search_dir LIKE %s AND
+                full_path LIKE %s
                 {"AND metadata_ingest_status = 'Success'" if not retry_failed else ""}
         """
 
-        rows = execute_sql_fetch(uri, sql, (search_dir, sql_glob))
+        with conn.cursor() as cur:
+            cur.execute(sql, (search_dir, sql_glob))
+            rows = cur.fetchall()
         kwargs["full_path_list"] = [row[0] for row in rows]
 
     match compression_type:
@@ -1558,66 +1483,59 @@ def add_files_to_metadata_table(uri: str, **kwargs: Any) -> pl.DataFrame:
         rows_sorted = sorted(rows, key=lambda x: x["full_path"] or "")
 
         # Upsert to metadata table using PostgreSQL's ON CONFLICT
-        # Build SQL dynamically to avoid ADBC issues with None parameters and type mismatches
-        for row in rows_sorted:
-            # Helper to escape single quotes and handle None
-            def sql_str(val):
-                if val is None:
-                    return "NULL"
-                return "'" + str(val).replace("'", "''") + "'"
+        with conn.cursor() as cur:
+            for row in rows_sorted:
+                cur.execute(
+                    f"""
+                    INSERT INTO {output_table}
+                    (search_dir, landing_dir, full_path, filesize, header, row_count,
+                     archive_full_path, file_hash, metadata_ingest_datetime, metadata_ingest_status)
+                    VALUES
+                    (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (full_path)
+                    DO UPDATE SET
+                        search_dir = EXCLUDED.search_dir,
+                        landing_dir = EXCLUDED.landing_dir,
+                        filesize = EXCLUDED.filesize,
+                        header = EXCLUDED.header,
+                        row_count = EXCLUDED.row_count,
+                        archive_full_path = EXCLUDED.archive_full_path,
+                        file_hash = EXCLUDED.file_hash,
+                        metadata_ingest_datetime = EXCLUDED.metadata_ingest_datetime,
+                        metadata_ingest_status = EXCLUDED.metadata_ingest_status
+                    """,
+                    (
+                        row["search_dir"],
+                        row["landing_dir"],
+                        row["full_path"],
+                        row["filesize"],
+                        row["header"],
+                        row["row_count"],
+                        row["archive_full_path"],
+                        row["file_hash"],
+                        row["metadata_ingest_datetime"],
+                        row["metadata_ingest_status"],
+                    ),
+                )
+        conn.commit()
 
-            def sql_int(val):
-                if val is None:
-                    return "NULL"
-                return str(int(val))
-
-            # Convert list to PostgreSQL array format
-            header_list = row["header"] if row["header"] else None
-            if header_list:
-                header_sql = "ARRAY[" + ", ".join(sql_str(h) for h in header_list) + "]"
-            else:
-                header_sql = "NULL"
-
-            upsert_sql = f"""
-                INSERT INTO {output_table}
-                (search_dir, landing_dir, full_path, filesize, header, row_count,
-                 archive_full_path, file_hash, metadata_ingest_datetime, metadata_ingest_status)
-                VALUES
-                ({sql_str(row["search_dir"])}, {sql_str(row["landing_dir"])}, {sql_str(row["full_path"])},
-                 {sql_int(row["filesize"])}, {header_sql}, {sql_int(row["row_count"])},
-                 {sql_str(row["archive_full_path"])}, {sql_str(row["file_hash"])},
-                 {sql_str(row["metadata_ingest_datetime"])}::timestamp, {sql_str(row["metadata_ingest_status"])})
-                ON CONFLICT (full_path)
-                DO UPDATE SET
-                    search_dir = EXCLUDED.search_dir,
-                    landing_dir = EXCLUDED.landing_dir,
-                    filesize = EXCLUDED.filesize,
-                    header = EXCLUDED.header,
-                    row_count = EXCLUDED.row_count,
-                    archive_full_path = EXCLUDED.archive_full_path,
-                    file_hash = EXCLUDED.file_hash,
-                    metadata_ingest_datetime = EXCLUDED.metadata_ingest_datetime,
-                    metadata_ingest_status = EXCLUDED.metadata_ingest_status
-            """
-
-            execute_sql(uri, upsert_sql)
-
-    # Return metadata results using Polars read_database
+    # Return metadata results
     sql = f"""
         SELECT *
         FROM {output_table}
-        WHERE search_dir LIKE $1 AND full_path LIKE $2
+        WHERE search_dir LIKE %s AND full_path LIKE %s
         ORDER BY metadata_ingest_datetime DESC
     """
 
-    df = pl.read_database_uri(
-        sql, uri, engine="adbc", execute_options={"parameters": (search_dir, sql_glob)}
-    )
-    return df
+    with conn.cursor() as cur:
+        cur.execute(sql, (search_dir, sql_glob))
+        columns = [desc[0] for desc in cur.description]
+        rows = cur.fetchall()
+        return pd.DataFrame(rows, columns=columns)
 
 
 def drop_search_dir(
-    uri: str,
+    conn: psycopg.Connection,
     search_dir: str,
     schema: str,
 ) -> None:
@@ -1626,29 +1544,34 @@ def drop_search_dir(
     """
     search_dir = Path(search_dir).as_posix()
 
-    sql = f"SELECT COUNT(*) FROM {schema}.metadata WHERE search_dir LIKE $1"
-    result = execute_sql_fetchone(uri, sql, (search_dir,))
-    count_before = result[0] if result else 0
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT COUNT(*) FROM {schema}.metadata WHERE search_dir LIKE %s",
+            (search_dir,),
+        )
+        count_before = cur.fetchone()[0]
 
     print(f"Rows before drop: {count_before}")
 
-    delete_sql = f"DELETE FROM {schema}.metadata WHERE search_dir LIKE $1"
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM {schema}.metadata WHERE search_dir LIKE %s", (search_dir,)
+        )
+        print(f"Deleted {cur.rowcount} rows")
+    conn.commit()
 
-    with get_connection(uri) as conn:
-        with conn.cursor() as cur:
-            cur.execute(delete_sql, (search_dir,))
-            rowcount = cur.rowcount
-            print(f"Deleted {rowcount} rows")
-        conn.commit()
-
-    result = execute_sql_fetchone(uri, sql, (search_dir,))
-    count_after = result[0] if result else 0
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT COUNT(*) FROM {schema}.metadata WHERE search_dir LIKE %s",
+            (search_dir,),
+        )
+        count_after = cur.fetchone()[0]
 
     print(f"Rows after drop: {count_after}")
 
 
 def drop_partition(
-    uri: str,
+    conn: psycopg.Connection,
     table: str,
     partition_key: str,
     schema: str,
@@ -1660,13 +1583,12 @@ def drop_partition(
         f"Running: DELETE FROM {schema}.{table} WHERE full_path LIKE '{partition_key}'"
     )
 
-    delete_sql = f"DELETE FROM {schema}.{table} WHERE full_path LIKE $1"
-
-    with get_connection(uri) as conn:
-        with conn.cursor() as cur:
-            cur.execute(delete_sql, (partition_key,))
-            print(f"Deleted {cur.rowcount} rows")
-        conn.commit()
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM {schema}.{table} WHERE full_path LIKE %s", (partition_key,)
+        )
+        print(f"Deleted {cur.rowcount} rows")
+    conn.commit()
 
     # PostgreSQL doesn't need vacuum the same way Spark does
     # VACUUM reclaims storage, but happens automatically in most cases
@@ -1674,7 +1596,7 @@ def drop_partition(
 
 
 def drop_file_from_metadata_and_table(
-    uri: str,
+    conn: psycopg.Connection,
     table: str,
     full_path: str,
     schema: str,
@@ -1685,16 +1607,15 @@ def drop_file_from_metadata_and_table(
     full_path = Path(full_path).as_posix()
 
     # Delete from metadata
-    delete_metadata_sql = f"DELETE FROM {schema}.metadata WHERE full_path = $1"
-
-    with get_connection(uri) as conn:
-        with conn.cursor() as cur:
-            cur.execute(delete_metadata_sql, (full_path,))
-            print(f"Deleted {cur.rowcount} rows from metadata")
-        conn.commit()
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM {schema}.metadata WHERE full_path = %s", (full_path,)
+        )
+        print(f"Deleted {cur.rowcount} rows from metadata")
+    conn.commit()
 
     # Delete from data table
-    drop_partition(uri=uri, table=table, partition_key=full_path, schema=schema)
+    drop_partition(conn=conn, table=table, partition_key=full_path, schema=schema)
 
 
 # CLI SCHEMA INFERENCE FUNCTIONS
@@ -1740,14 +1661,14 @@ def infer_schema_from_file(
     sample_rows: int = 1000,
 ) -> Dict[str, Tuple[List[str], str]]:
     """
-    Infer schema from file using polars type inference
+    Infer schema from file using pandas type inference
 
     Args:
         file_path: Path to the file
         filetype: File type (csv, tsv, psv, xlsx, parquet)
         separator: Delimiter for text files
         has_header: Whether the file has a header row
-        encoding: File encoding
+        encoding: File encoding (supports all Python encodings: cp1252, latin1, etc.)
         excel_skiprows: Rows to skip in Excel files
         sample_rows: Number of rows to sample for type inference
 
@@ -1765,7 +1686,7 @@ def infer_schema_from_file(
         ext = path.suffix.lower().lstrip(".")
         filetype = ext if ext in ["csv", "tsv", "psv", "xlsx", "parquet"] else "csv"
 
-    # Read file with polars type inference
+    # Read file with pandas type inference
     df = None
 
     if filetype in ["csv", "tsv", "psv"]:
@@ -1775,35 +1696,29 @@ def infer_schema_from_file(
         elif filetype == "psv":
             separator = "|"
 
-        # Handle encoding for polars
-        polars_encoding = encoding.replace("-sig", "").replace("-", "")
-        if polars_encoding.lower() not in ["utf8", "utf-8"]:
-            polars_encoding = "utf8-lossy"
-
-        # Read with polars type inference
-        df = pl.read_csv(
+        # Read with pandas - full encoding support
+        df = pd.read_csv(
             file_path,
-            separator=separator,
-            has_header=has_header,
-            encoding=polars_encoding,
-            n_rows=sample_rows,
-            infer_schema_length=sample_rows,
+            sep=separator,
+            header=0 if has_header else None,
+            encoding=encoding,
+            nrows=sample_rows,
         )
 
         # If no header, generate column names
         if not has_header:
-            new_columns = [f"col_{i}" for i in range(len(df.columns))]
-            df = df.rename(dict(zip(df.columns, new_columns)))
+            df.columns = [f"col_{i}" for i in range(len(df.columns))]
 
     elif filetype == "xlsx":
-        df = pl.read_excel(
+        df = pd.read_excel(
             file_path,
-            read_options={"skip_rows": excel_skiprows, "n_rows": sample_rows},
+            skiprows=excel_skiprows,
+            nrows=sample_rows,
         )
 
     elif filetype == "parquet":
         # Parquet already has type information
-        df = pl.read_parquet(file_path)
+        df = pd.read_parquet(file_path)
         # Sample rows
         df = df.head(sample_rows)
 
@@ -1874,7 +1789,7 @@ Examples:
     parser.add_argument(
         "--encoding",
         default="utf-8-sig",
-        help="File encoding (default: utf-8-sig)",
+        help="File encoding (default: utf-8-sig). Supports cp1252, latin1, etc.",
     )
 
     parser.add_argument(

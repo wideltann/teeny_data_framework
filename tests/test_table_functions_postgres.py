@@ -14,8 +14,8 @@ Requires Docker to be running.
 """
 
 import pytest
-import polars as pl
-import adbc_driver_postgresql.dbapi as pg_dbapi
+import pandas as pd
+import numpy as np
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 import tempfile
@@ -23,6 +23,8 @@ import zipfile
 import json
 from unittest.mock import Mock, patch, MagicMock
 from testcontainers.postgres import PostgresContainer
+
+import psycopg
 
 # Import functions to test
 from src.table_functions_postgres import (
@@ -63,12 +65,49 @@ from src.table_functions_postgres import (
     # Schema inference
     to_snake_case,
     infer_schema_from_file,
-    # Connection helpers
-    get_connection,
-    execute_sql,
-    execute_sql_fetch,
-    execute_sql_fetchone,
 )
+
+
+# ===== TEST HELPER FUNCTIONS =====
+
+import re
+
+def _convert_placeholders(sql: str) -> str:
+    """Convert $1, $2, etc. placeholders to %s for psycopg3"""
+    return re.sub(r'\$\d+', '%s', sql)
+
+
+def execute_sql(conn: psycopg.Connection, sql: str, params: tuple = None):
+    """Execute SQL statement without returning results"""
+    sql = _convert_placeholders(sql)
+    with conn.cursor() as cur:
+        if params:
+            cur.execute(sql, params)
+        else:
+            cur.execute(sql)
+    conn.commit()
+
+
+def execute_sql_fetch(conn: psycopg.Connection, sql: str, params: tuple = None):
+    """Execute SQL and return all results"""
+    sql = _convert_placeholders(sql)
+    with conn.cursor() as cur:
+        if params:
+            cur.execute(sql, params)
+        else:
+            cur.execute(sql)
+        return cur.fetchall()
+
+
+def execute_sql_fetchone(conn: psycopg.Connection, sql: str, params: tuple = None):
+    """Execute SQL and return single result"""
+    sql = _convert_placeholders(sql)
+    with conn.cursor() as cur:
+        if params:
+            cur.execute(sql, params)
+        else:
+            cur.execute(sql)
+        return cur.fetchone()
 
 
 # ===== FIXTURES =====
@@ -99,9 +138,9 @@ def postgres_container():
 
 
 @pytest.fixture(scope="function")
-def db_uri(postgres_container):
+def db_conn(postgres_container):
     """
-    Create a database URI for each test function.
+    Create a database connection for each test function.
 
     Reuses the same PostgreSQL container but creates a fresh schema for each test.
     """
@@ -110,19 +149,24 @@ def db_uri(postgres_container):
 
     # Convert SQLAlchemy-style URL to standard PostgreSQL URL
     # testcontainers returns: postgresql+psycopg2://...
-    # ADBC expects: postgresql://...
+    # psycopg expects: postgresql://...
     uri = connection_url.replace("postgresql+psycopg2://", "postgresql://")
 
-    # Create test schema using ADBC
-    execute_sql(uri, "CREATE SCHEMA IF NOT EXISTS test_schema")
+    # Create connection
+    conn = psycopg.connect(uri)
 
-    yield uri
+    # Create test schema
+    execute_sql(conn, "CREATE SCHEMA IF NOT EXISTS test_schema")
+
+    yield conn
 
     # Cleanup schema after test
     try:
-        execute_sql(uri, "DROP SCHEMA IF EXISTS test_schema CASCADE")
+        execute_sql(conn, "DROP SCHEMA IF EXISTS test_schema CASCADE")
     except:
         pass
+    finally:
+        conn.close()
 
 
 @pytest.fixture
@@ -294,7 +338,7 @@ class TestColumnMapping:
         )
 
         assert rename_dict == {}  # No renames needed
-        assert read_dtypes == {"col1": "string", "col2": "int", "col3": "float"}
+        assert read_dtypes == {"col1": "string", "col2": "Int64", "col3": "float64"}
         assert missing_cols == {}
 
     def test_prepare_column_mapping_with_rename(self):
@@ -310,7 +354,7 @@ class TestColumnMapping:
         )
 
         assert rename_dict == {"old_name": "new_name"}
-        assert read_dtypes == {"old_name": "string", "col2": "int"}
+        assert read_dtypes == {"old_name": "string", "col2": "Int64"}
         assert missing_cols == {}
 
     def test_prepare_column_mapping_with_missing_cols(self):
@@ -327,7 +371,7 @@ class TestColumnMapping:
         )
 
         assert missing_cols == {"col3": "float"}
-        assert read_dtypes == {"col1": "string", "col2": "int"}
+        assert read_dtypes == {"col1": "string", "col2": "Int64"}
 
     def test_prepare_column_mapping_with_default(self):
         """Test default type for unmapped columns"""
@@ -345,7 +389,7 @@ class TestColumnMapping:
         # col3 and col4 should get default type
         assert read_dtypes == {
             "col1": "string",
-            "col2": "int",
+            "col2": "Int64",
             "col3": "string",
             "col4": "string",
         }
@@ -376,7 +420,7 @@ class TestFileReading:
         assert len(df) == 3
         assert list(df.columns) == ["name", "age", "score"]
         assert df["name"][0] == "Alice"
-        assert df["age"].dtype == pl.Int64
+        assert df["age"].dtype == pd.Int64Dtype()
 
     def test_read_csv_no_header(self, sample_csv_no_header):
         """Test reading CSV without header"""
@@ -418,7 +462,7 @@ class TestFileReading:
         assert len(df) == 3
         assert list(df.columns) == ["name", "age", "score"]
         assert df["name"][0] == "Alice"
-        assert df["age"].dtype == pl.Int64
+        assert df["age"].dtype == pd.Int64Dtype()
         assert df["score"][0] == 95.5
 
     def test_read_csv_psv_separator(self, sample_psv_file):
@@ -455,7 +499,7 @@ class TestFileReading:
         )
 
         assert "extra_col" in df.columns
-        assert df["extra_col"].null_count() == len(df)
+        assert df["extra_col"].isna().sum() == len(df)
 
     def test_read_using_column_mapping_csv(self, sample_csv_file):
         """Test router function for CSV"""
@@ -568,12 +612,12 @@ class TestFileReading:
     def test_read_xlsx_no_duplicate_columns_with_rename(self, temp_dir):
         """Test that Excel column renaming doesn't create duplicate columns"""
         xlsx_path = temp_dir / "rename_test.xlsx"
-        test_df = pl.DataFrame({
+        test_df = pd.DataFrame({
             "FirstName": ["John", "Jane"],
             "LastName": ["Doe", "Smith"],
             "TotalAmount": [100.50, 200.75]
         })
-        test_df.write_excel(str(xlsx_path))
+        test_df.to_excel(str(xlsx_path), index=False)
 
         column_mapping = {
             "first_name": (["FirstName"], "string"),
@@ -677,31 +721,31 @@ class TestFileReading:
 class TestDatabaseOperations:
     """Test PostgreSQL database operations"""
 
-    def test_table_exists_true(self, db_uri):
+    def test_table_exists_true(self, db_conn):
         """Test table_exists when table exists"""
-        execute_sql(db_uri, "CREATE TABLE test_schema.test_table (id INT)")
+        execute_sql(db_conn, "CREATE TABLE test_schema.test_table (id INT)")
 
-        assert table_exists(db_uri, "test_schema", "test_table")
+        assert table_exists(db_conn, "test_schema", "test_table")
 
-    def test_table_exists_false(self, db_uri):
+    def test_table_exists_false(self, db_conn):
         """Test table_exists when table doesn't exist"""
-        assert not table_exists(db_uri, "test_schema", "nonexistent_table")
+        assert not table_exists(db_conn, "test_schema", "nonexistent_table")
 
-    def test_create_table_from_dataframe(self, db_uri):
+    def test_create_table_from_dataframe(self, db_conn):
         """Test creating table from DataFrame"""
-        df = pl.DataFrame({
-            "id": pl.Series([1, 2, 3], dtype=pl.Int64),
-            "name": pl.Series(["Alice", "Bob", "Charlie"], dtype=pl.Utf8),
+        df = pd.DataFrame({
+            "id": pd.Series([1, 2, 3], dtype=pd.Int64Dtype()),
+            "name": pd.Series(["Alice", "Bob", "Charlie"], dtype="string"),
             "score": [85.5, 92.0, 78.5],
         })
 
-        create_table_from_dataframe(db_uri, df, "test_schema", "new_table")
+        create_table_from_dataframe(db_conn, df, "test_schema", "new_table")
 
-        assert table_exists(db_uri, "test_schema", "new_table")
+        assert table_exists(db_conn, "test_schema", "new_table")
 
-    def test_get_table_schema(self, db_uri):
+    def test_get_table_schema(self, db_conn):
         """Test getting table schema"""
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.schema_test (
                 id BIGINT,
                 name TEXT,
@@ -709,7 +753,7 @@ class TestDatabaseOperations:
             )
         """)
 
-        schema = get_table_schema(db_uri, "test_schema", "schema_test")
+        schema = get_table_schema(db_conn, "test_schema", "schema_test")
 
         assert "id" in schema
         assert "name" in schema
@@ -717,10 +761,10 @@ class TestDatabaseOperations:
         assert schema["id"] == "bigint"
         assert schema["name"] == "text"
 
-    def test_validate_schema_match_success(self, db_uri):
+    def test_validate_schema_match_success(self, db_conn):
         """Test schema validation when schemas match"""
         # Create table
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.validate_test (
                 id BIGINT,
                 name TEXT
@@ -728,58 +772,58 @@ class TestDatabaseOperations:
         """)
 
         # Create matching DataFrame - polars dtypes that map to BIGINT and TEXT
-        df = pl.DataFrame({
-            "id": pl.Series([1, 2], dtype=pl.Int64),
-            "name": pl.Series(["Alice", "Bob"], dtype=pl.Utf8),
+        df = pd.DataFrame({
+            "id": pd.Series([1, 2], dtype=pd.Int64Dtype()),
+            "name": pd.Series(["Alice", "Bob"], dtype="string"),
         })
 
         # Should not raise
-        validate_schema_match(db_uri, df, "test_schema", "validate_test")
+        validate_schema_match(db_conn, df, "test_schema", "validate_test")
 
-    def test_validate_schema_match_missing_col_in_table(self, db_uri):
+    def test_validate_schema_match_missing_col_in_table(self, db_conn):
         """Test schema validation when DataFrame has extra columns"""
         # Create table
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.validate_test2 (
                 id BIGINT
             )
         """)
 
         # Create DataFrame with extra column
-        df = pl.DataFrame({
-            "id": pl.Series([1, 2], dtype=pl.Int64),
-            "extra": pl.Series(["a", "b"], dtype=pl.Utf8),
+        df = pd.DataFrame({
+            "id": pd.Series([1, 2], dtype=pd.Int64Dtype()),
+            "extra": pd.Series(["a", "b"], dtype="string"),
         })
 
         with pytest.raises(ValueError, match="DataFrame has columns not in table"):
-            validate_schema_match(db_uri, df, "test_schema", "validate_test2")
+            validate_schema_match(db_conn, df, "test_schema", "validate_test2")
 
-    def test_copy_dataframe_to_table(self, db_uri):
+    def test_copy_dataframe_to_table(self, db_conn):
         """Test bulk loading DataFrame to PostgreSQL"""
-        df = pl.DataFrame({
-            "id": pl.Series([1, 2, 3], dtype=pl.Int64),
-            "name": pl.Series(["Alice", "Bob", "Charlie"], dtype=pl.Utf8),
+        df = pd.DataFrame({
+            "id": pd.Series([1, 2, 3], dtype=pd.Int64Dtype()),
+            "name": pd.Series(["Alice", "Bob", "Charlie"], dtype="string"),
             "score": [85.5, 92.0, 78.5],
         })
 
-        copy_dataframe_to_table(db_uri, df, "test_schema", "copy_test")
+        copy_dataframe_to_table(db_conn, df, "test_schema", "copy_test")
 
         # Verify data was loaded
-        result = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.copy_test")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.copy_test")
         assert result[0] == 3
 
-    def test_copy_dataframe_with_nulls(self, db_uri):
+    def test_copy_dataframe_with_nulls(self, db_conn):
         """Test COPY with NULL values"""
-        df = pl.DataFrame({
-            "id": pl.Series([1, 2, None], dtype=pl.Int64),
-            "name": pl.Series(["Alice", None, "Charlie"], dtype=pl.Utf8),
+        df = pd.DataFrame({
+            "id": pd.Series([1, 2, None], dtype=pd.Int64Dtype()),
+            "name": pd.Series(["Alice", None, "Charlie"], dtype="string"),
             "score": [85.5, None, 78.5],
         })
 
-        copy_dataframe_to_table(db_uri, df, "test_schema", "null_test")
+        copy_dataframe_to_table(db_conn, df, "test_schema", "null_test")
 
         # Verify NULLs were preserved
-        result = execute_sql_fetchone(db_uri, "SELECT id, name, score FROM test_schema.null_test WHERE id = 2")
+        result = execute_sql_fetchone(db_conn, "SELECT id, name, score FROM test_schema.null_test WHERE id = 2")
 
         assert result[1] is None
         assert result[2] is None
@@ -869,60 +913,60 @@ class TestMetadataFunctions:
         assert row["metadata_ingest_status"] == "Failure"
         assert row["error_message"] == "Test error"
 
-    def test_row_count_check_success(self, db_uri, sample_csv_file):
+    def test_row_count_check_success(self, db_conn, sample_csv_file):
         """Test row count validation success"""
         # Create metadata table and insert row
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 full_path TEXT PRIMARY KEY,
                 row_count BIGINT
             )
         """)
-        execute_sql(db_uri,
+        execute_sql(db_conn,
             "INSERT INTO test_schema.metadata (full_path, row_count) VALUES ($1, $2)",
             (str(sample_csv_file), 3)
         )
 
         # Create DataFrame with matching row count
-        df = pl.DataFrame({"col1": [1, 2, 3]})
+        df = pd.DataFrame({"col1": [1, 2, 3]})
 
         # Should not raise
         row_count_check(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             df=df,
             full_path=str(sample_csv_file),
         )
 
-    def test_row_count_check_failure(self, db_uri, sample_csv_file):
+    def test_row_count_check_failure(self, db_conn, sample_csv_file):
         """Test row count validation failure"""
         # Create metadata table and insert row
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 full_path TEXT PRIMARY KEY,
                 row_count BIGINT
             )
         """)
-        execute_sql(db_uri,
+        execute_sql(db_conn,
             "INSERT INTO test_schema.metadata (full_path, row_count) VALUES ($1, $2)",
             (str(sample_csv_file), 5)  # Wrong count
         )
 
         # Create DataFrame with different row count
-        df = pl.DataFrame({"col1": [1, 2, 3]})
+        df = pd.DataFrame({"col1": [1, 2, 3]})
 
         with pytest.raises(ValueError, match="Check failed"):
             row_count_check(
-                uri=db_uri,
+                conn=db_conn,
                 schema="test_schema",
                 df=df,
                 full_path=str(sample_csv_file),
             )
 
-    def test_update_metadata_success(self, db_uri, sample_csv_file):
+    def test_update_metadata_success(self, db_conn, sample_csv_file):
         """Test updating metadata with success status"""
         # Create metadata table
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 full_path TEXT PRIMARY KEY,
                 ingest_datetime TIMESTAMP,
@@ -932,20 +976,20 @@ class TestMetadataFunctions:
                 ingest_runtime INTEGER
             )
         """)
-        execute_sql(db_uri,
+        execute_sql(db_conn,
             "INSERT INTO test_schema.metadata (full_path) VALUES ($1)",
             (str(sample_csv_file),)
         )
 
         update_metadata(
-            uri=db_uri,
+            conn=db_conn,
             full_path=str(sample_csv_file),
             schema="test_schema",
             ingest_runtime=5,
         )
 
         # Verify update
-        result = execute_sql_fetchone(db_uri,
+        result = execute_sql_fetchone(db_conn,
             "SELECT status, ingest_runtime FROM test_schema.metadata WHERE full_path = $1",
             (str(sample_csv_file),)
         )
@@ -953,10 +997,10 @@ class TestMetadataFunctions:
         assert result[0] == "Success"
         assert result[1] == 5
 
-    def test_update_metadata_failure(self, db_uri, sample_csv_file):
+    def test_update_metadata_failure(self, db_conn, sample_csv_file):
         """Test updating metadata with failure status"""
         # Create metadata table
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 full_path TEXT PRIMARY KEY,
                 ingest_datetime TIMESTAMP,
@@ -966,20 +1010,20 @@ class TestMetadataFunctions:
                 ingest_runtime INTEGER
             )
         """)
-        execute_sql(db_uri,
+        execute_sql(db_conn,
             "INSERT INTO test_schema.metadata (full_path) VALUES ($1)",
             (str(sample_csv_file),)
         )
 
         update_metadata(
-            uri=db_uri,
+            conn=db_conn,
             full_path=str(sample_csv_file),
             schema="test_schema",
             error_message="Test error occurred",
         )
 
         # Verify update
-        result = execute_sql_fetchone(db_uri,
+        result = execute_sql_fetchone(db_conn,
             "SELECT status, error_message FROM test_schema.metadata WHERE full_path = $1",
             (str(sample_csv_file),)
         )
@@ -1224,7 +1268,7 @@ value1,value2,value3,value4,value5
 class TestIntegration:
     """Integration tests for complete workflows"""
 
-    def test_add_files_to_metadata_table(self, db_uri, temp_dir, sample_csv_file):
+    def test_add_files_to_metadata_table(self, db_conn, temp_dir, sample_csv_file):
         """Test adding files to metadata table"""
         # Create search and landing directories
         search_dir = temp_dir / "search"
@@ -1255,7 +1299,7 @@ class TestIntegration:
         assert len(rows) == 1
         assert rows[0]["metadata_ingest_status"] == "Success"
 
-    def test_extract_and_add_zip_files(self, db_uri, temp_dir, sample_zip_file):
+    def test_extract_and_add_zip_files(self, db_conn, temp_dir, sample_zip_file):
         """Test extracting ZIP files and adding to metadata"""
         landing_dir = temp_dir / "landing"
         landing_dir.mkdir()
@@ -1282,61 +1326,61 @@ class TestIntegration:
         extracted_files = list(landing_dir.rglob("*.csv"))
         assert len(extracted_files) == 2
 
-    def test_drop_search_dir(self, db_uri, temp_dir):
+    def test_drop_search_dir(self, db_conn, temp_dir):
         """Test dropping files from metadata by search_dir"""
         # Create metadata table
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 search_dir TEXT,
                 full_path TEXT PRIMARY KEY
             )
         """)
-        execute_sql(db_uri,
+        execute_sql(db_conn,
             "INSERT INTO test_schema.metadata VALUES ($1, $2)",
             (str(temp_dir), str(temp_dir / "file1.csv"))
         )
-        execute_sql(db_uri,
+        execute_sql(db_conn,
             "INSERT INTO test_schema.metadata VALUES ($1, $2)",
             (str(temp_dir), str(temp_dir / "file2.csv"))
         )
 
         drop_search_dir(
-            uri=db_uri,
+            conn=db_conn,
             search_dir=str(temp_dir),
             schema="test_schema",
         )
 
         # Verify deletion
-        result = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.metadata")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.metadata")
         assert result[0] == 0
 
-    def test_drop_partition(self, db_uri):
+    def test_drop_partition(self, db_conn):
         """Test dropping partition from table"""
         # Create test table
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.partition_test (
                 full_path TEXT,
                 data TEXT
             )
         """)
-        execute_sql(db_uri,
+        execute_sql(db_conn,
             "INSERT INTO test_schema.partition_test VALUES ($1, $2)",
             ("/path/to/file1.csv", "data1")
         )
-        execute_sql(db_uri,
+        execute_sql(db_conn,
             "INSERT INTO test_schema.partition_test VALUES ($1, $2)",
             ("/path/to/file2.csv", "data2")
         )
 
         drop_partition(
-            uri=db_uri,
+            conn=db_conn,
             table="partition_test",
             partition_key="/path/to/file1.csv",
             schema="test_schema",
         )
 
         # Verify deletion
-        result = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.partition_test")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.partition_test")
         assert result[0] == 1
 
 
@@ -1384,12 +1428,12 @@ class TestEdgeCases:
             null_value="",
         )
 
-        assert df["age"][1] is None
+        assert pd.isna(df["age"][1])
 
-    def test_copy_dataframe_large_error_message(self, db_uri):
+    def test_copy_dataframe_large_error_message(self, db_conn):
         """Test error message truncation in update_metadata"""
         # Create metadata table with all required columns
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 full_path TEXT PRIMARY KEY,
                 ingest_datetime TIMESTAMP,
@@ -1399,7 +1443,7 @@ class TestEdgeCases:
                 ingest_runtime INTEGER
             )
         """)
-        execute_sql(db_uri,
+        execute_sql(db_conn,
             "INSERT INTO test_schema.metadata (full_path) VALUES ($1)",
             ("/path/to/file.csv",)
         )
@@ -1408,14 +1452,14 @@ class TestEdgeCases:
         long_error = "x" * 1000
 
         update_metadata(
-            uri=db_uri,
+            conn=db_conn,
             full_path="/path/to/file.csv",
             schema="test_schema",
             error_message=long_error,
         )
 
         # Verify truncation
-        result = execute_sql_fetchone(db_uri,
+        result = execute_sql_fetchone(db_conn,
             "SELECT error_message FROM test_schema.metadata WHERE full_path = $1",
             ("/path/to/file.csv",)
         )
@@ -1424,10 +1468,10 @@ class TestEdgeCases:
         assert len(error) <= 550  # 500 + "... [truncated]"
         assert "truncated" in error
 
-    def test_validate_schema_type_mismatch(self, db_uri):
+    def test_validate_schema_type_mismatch(self, db_conn):
         """Test schema validation with type mismatch"""
         # Create table with wrong types
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.type_test (
                 id TEXT,
                 name BIGINT
@@ -1435,13 +1479,13 @@ class TestEdgeCases:
         """)
 
         # Create DataFrame with different types
-        df = pl.DataFrame({
-            "id": pl.Series([1, 2], dtype=pl.Int64),
-            "name": pl.Series(["Alice", "Bob"], dtype=pl.Utf8),
+        df = pd.DataFrame({
+            "id": pd.Series([1, 2], dtype=pd.Int64Dtype()),
+            "name": pd.Series(["Alice", "Bob"], dtype="string"),
         })
 
         with pytest.raises(ValueError, match="type mismatches"):
-            validate_schema_match(db_uri, df, "test_schema", "type_test")
+            validate_schema_match(db_conn, df, "test_schema", "type_test")
 
 
 class TestMissingFunctions:
@@ -1483,8 +1527,8 @@ class TestMissingFunctions:
 
     def test_read_parquet(self, temp_dir):
         """Test reading Parquet files with column_mapping"""
-        # Create a Parquet file using polars
-        test_df = pl.DataFrame({
+        # Create a Parquet file using pandas
+        test_df = pd.DataFrame({
             "name": ["Alice", "Bob", "Charlie"],
             "age": [25, 30, 35],
             "score": [85.5, 92.0, 78.5],
@@ -1492,7 +1536,7 @@ class TestMissingFunctions:
         })
 
         parquet_path = temp_dir / "test.parquet"
-        test_df.write_parquet(str(parquet_path))
+        test_df.to_parquet(str(parquet_path))
 
         # Test with column_mapping
         column_mapping = {
@@ -1514,13 +1558,13 @@ class TestMissingFunctions:
 
     def test_read_parquet_with_rename(self, temp_dir):
         """Test reading Parquet files with column renaming"""
-        test_df = pl.DataFrame({
+        test_df = pd.DataFrame({
             "old_name": ["Alice", "Bob"],
             "value": [100, 200],
         })
 
         parquet_path = temp_dir / "test_rename.parquet"
-        test_df.write_parquet(str(parquet_path))
+        test_df.to_parquet(str(parquet_path))
 
         column_mapping = {
             "new_name": (["old_name"], "string"),
@@ -1538,12 +1582,12 @@ class TestMissingFunctions:
 
     def test_read_parquet_with_missing_cols(self, temp_dir):
         """Test reading Parquet with missing columns in mapping"""
-        test_df = pl.DataFrame({
+        test_df = pd.DataFrame({
             "name": ["Alice", "Bob"],
         })
 
         parquet_path = temp_dir / "test_missing.parquet"
-        test_df.write_parquet(str(parquet_path))
+        test_df.to_parquet(str(parquet_path))
 
         column_mapping = {
             "name": ([], "string"),
@@ -1556,7 +1600,7 @@ class TestMissingFunctions:
         )
 
         assert "missing_col" in df.columns
-        assert df["missing_col"].null_count() == len(df)
+        assert df["missing_col"].isna().sum() == len(df)
 
     def test_s3_path_detection(self, temp_dir):
         """Test S3 path detection in various contexts"""
@@ -1568,10 +1612,10 @@ class TestMissingFunctions:
         assert not is_s3_path("/local/path/file.csv")
         assert not is_s3_path(str(temp_dir / "file.csv"))
 
-    def test_update_table_basic(self, db_uri, temp_dir, sample_csv_file):
+    def test_update_table_basic(self, db_conn, temp_dir, sample_csv_file):
         """Test update_table function end-to-end"""
         # Create metadata table first
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 search_dir TEXT,
                 landing_dir TEXT,
@@ -1593,7 +1637,7 @@ class TestMissingFunctions:
 
         # Insert metadata for the sample file
         # Note: landing_dir must have trailing slash to match update_table queries
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             INSERT INTO test_schema.metadata
             (full_path, row_count, metadata_ingest_status, landing_dir)
             VALUES ($1, $2, $3, $4)
@@ -1607,7 +1651,7 @@ class TestMissingFunctions:
 
         # Run update_table
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="test_output",
             filetype="csv",
@@ -1617,16 +1661,16 @@ class TestMissingFunctions:
         )
 
         # Verify data was loaded
-        result = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.test_output")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.test_output")
         assert result[0] == 3
 
-    def test_add_files_to_metadata_table_full(self, db_uri, temp_dir, sample_csv_file):
+    def test_add_files_to_metadata_table_full(self, db_conn, temp_dir, sample_csv_file):
         """Test add_files_to_metadata_table end-to-end"""
         # This is already tested indirectly through add_files in TestIntegration
         # Here we just verify the metadata table creation aspect
 
         # Clean up any existing metadata table from previous tests
-        execute_sql(db_uri, "DROP TABLE IF EXISTS test_schema.metadata")
+        execute_sql(db_conn, "DROP TABLE IF EXISTS test_schema.metadata")
 
         # Create search and landing directories
         search_dir = temp_dir / "search"
@@ -1643,10 +1687,10 @@ class TestMissingFunctions:
         # and requires specific database state. Already covered in integration tests.
         # Just verify the table creation logic works
 
-        assert not table_exists(db_uri, "test_schema", "metadata")
+        assert not table_exists(db_conn, "test_schema", "metadata")
 
         # Create metadata table manually to test the schema
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 search_dir TEXT,
                 landing_dir TEXT,
@@ -1666,48 +1710,48 @@ class TestMissingFunctions:
             )
         """)
 
-        assert table_exists(db_uri, "test_schema", "metadata")
+        assert table_exists(db_conn, "test_schema", "metadata")
 
 
 class TestAdditionalFunctions:
     """Additional tests for uncovered functions"""
 
-    def test_drop_file_from_metadata_and_table(self, db_uri):
+    def test_drop_file_from_metadata_and_table(self, db_conn):
         """Test dropping file from both metadata and data table"""
         # Create metadata table
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 full_path TEXT PRIMARY KEY
             )
         """)
-        execute_sql(db_uri,
+        execute_sql(db_conn,
             "INSERT INTO test_schema.metadata VALUES ($1)",
             ("/path/to/file.csv",)
         )
 
         # Create data table
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.data_table (
                 full_path TEXT,
                 data TEXT
             )
         """)
-        execute_sql(db_uri,
+        execute_sql(db_conn,
             "INSERT INTO test_schema.data_table VALUES ($1, $2)",
             ("/path/to/file.csv", "test_data")
         )
 
         # Drop file from both tables
         drop_file_from_metadata_and_table(
-            uri=db_uri,
+            conn=db_conn,
             table="data_table",
             full_path="/path/to/file.csv",
             schema="test_schema",
         )
 
         # Verify deletions
-        metadata_count = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.metadata")[0]
-        data_count = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.data_table")[0]
+        metadata_count = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.metadata")[0]
+        data_count = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.data_table")[0]
 
         assert metadata_count == 0
         assert data_count == 0
@@ -1724,36 +1768,36 @@ class TestAdditionalFunctions:
                 has_header=True,
             )
 
-    def test_row_count_check_with_unpivot_multiplier(self, db_uri, sample_csv_file):
+    def test_row_count_check_with_unpivot_multiplier(self, db_conn, sample_csv_file):
         """Test row count check with unpivot multiplier"""
         # Create metadata table
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 full_path TEXT PRIMARY KEY,
                 row_count BIGINT
             )
         """)
-        execute_sql(db_uri,
+        execute_sql(db_conn,
             "INSERT INTO test_schema.metadata (full_path, row_count) VALUES ($1, $2)",
             (str(sample_csv_file), 3)
         )
 
         # Create DataFrame with 9 rows (3 * 3 multiplier)
-        df = pl.DataFrame({"col1": list(range(9))})
+        df = pd.DataFrame({"col1": list(range(9))})
 
         # Should not raise with multiplier of 3
         row_count_check(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             df=df,
             full_path=str(sample_csv_file),
             unpivot_row_multiplier=3,
         )
 
-    def test_update_metadata_with_unpivot_multiplier(self, db_uri):
+    def test_update_metadata_with_unpivot_multiplier(self, db_conn):
         """Test updating metadata with unpivot row multiplier"""
         # Create metadata table
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 full_path TEXT PRIMARY KEY,
                 ingest_datetime TIMESTAMP,
@@ -1763,13 +1807,13 @@ class TestAdditionalFunctions:
                 ingest_runtime INTEGER
             )
         """)
-        execute_sql(db_uri,
+        execute_sql(db_conn,
             "INSERT INTO test_schema.metadata (full_path) VALUES ($1)",
             ("/path/to/file.csv",)
         )
 
         update_metadata(
-            uri=db_uri,
+            conn=db_conn,
             full_path="/path/to/file.csv",
             schema="test_schema",
             unpivot_row_multiplier=5,
@@ -1777,7 +1821,7 @@ class TestAdditionalFunctions:
         )
 
         # Verify update
-        result = execute_sql_fetchone(db_uri,
+        result = execute_sql_fetchone(db_conn,
             "SELECT unpivot_row_multiplier, ingest_runtime FROM test_schema.metadata WHERE full_path = $1",
             ("/path/to/file.csv",)
         )
@@ -1792,10 +1836,10 @@ class TestAdditionalFunctions:
 class TestUpdateTableAdvancedFeatures:
     """Test advanced features of update_table function"""
 
-    def _setup_metadata_table(self, db_uri, temp_dir, csv_files):
+    def _setup_metadata_table(self, db_conn, temp_dir, csv_files):
         """Helper to set up metadata table with files"""
-        execute_sql(db_uri, "DROP TABLE IF EXISTS test_schema.metadata")
-        execute_sql(db_uri, """
+        execute_sql(db_conn, "DROP TABLE IF EXISTS test_schema.metadata")
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 search_dir TEXT,
                 landing_dir TEXT,
@@ -1816,20 +1860,20 @@ class TestUpdateTableAdvancedFeatures:
         """)
 
         for csv_file, row_count in csv_files:
-            execute_sql(db_uri, """
+            execute_sql(db_conn, """
                 INSERT INTO test_schema.metadata
                 (full_path, row_count, metadata_ingest_status, landing_dir)
                 VALUES ($1, $2, $3, $4)
             """, (str(csv_file), row_count, "Success", str(temp_dir) + "/"))
 
-    def test_update_table_with_transform_fn(self, db_uri, temp_dir):
+    def test_update_table_with_transform_fn(self, db_conn, temp_dir):
         """Test update_table with transform_fn"""
         # Create CSV file
         csv_path = temp_dir / "transform_test.csv"
         csv_path.write_text("name,value\nAlice,100\nBob,200\n")
 
         # Setup metadata
-        self._setup_metadata_table(db_uri, temp_dir, [(csv_path, 2)])
+        self._setup_metadata_table(db_conn, temp_dir, [(csv_path, 2)])
 
         column_mapping = {
             "name": ([], "string"),
@@ -1838,10 +1882,11 @@ class TestUpdateTableAdvancedFeatures:
 
         # Transform function that doubles the value
         def transform_fn(df):
-            return df.with_columns((pl.col("value") * 2).alias("value"))
+            df["value"] = df["value"] * 2
+            return df
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="transform_output",
             filetype="csv",
@@ -1852,15 +1897,15 @@ class TestUpdateTableAdvancedFeatures:
         )
 
         # Verify transformation was applied
-        result = execute_sql_fetchone(db_uri, "SELECT value FROM test_schema.transform_output WHERE name = 'Alice'")
+        result = execute_sql_fetchone(db_conn, "SELECT value FROM test_schema.transform_output WHERE name = 'Alice'")
         assert result[0] == 200  # 100 * 2
 
-    def test_update_table_with_additional_cols_fn(self, db_uri, temp_dir):
+    def test_update_table_with_additional_cols_fn(self, db_conn, temp_dir):
         """Test update_table with additional_cols_fn"""
         csv_path = temp_dir / "additional_cols_test.csv"
         csv_path.write_text("name,value\nAlice,100\n")
 
-        self._setup_metadata_table(db_uri, temp_dir, [(csv_path, 1)])
+        self._setup_metadata_table(db_conn, temp_dir, [(csv_path, 1)])
 
         column_mapping = {
             "name": ([], "string"),
@@ -1875,7 +1920,7 @@ class TestUpdateTableAdvancedFeatures:
             }
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="additional_cols_output",
             filetype="csv",
@@ -1886,16 +1931,16 @@ class TestUpdateTableAdvancedFeatures:
         )
 
         # Verify additional columns were added
-        result = execute_sql_fetchone(db_uri, "SELECT source_file, load_timestamp FROM test_schema.additional_cols_output")
+        result = execute_sql_fetchone(db_conn, "SELECT source_file, load_timestamp FROM test_schema.additional_cols_output")
         assert result[0] == "additional_cols_test"
         assert result[1] == "2024-01-01"
 
-    def test_update_table_with_output_table_naming_fn(self, db_uri, temp_dir):
+    def test_update_table_with_output_table_naming_fn(self, db_conn, temp_dir):
         """Test update_table with output_table_naming_fn"""
         csv_path = temp_dir / "naming_test.csv"
         csv_path.write_text("name,value\nAlice,100\n")
 
-        self._setup_metadata_table(db_uri, temp_dir, [(csv_path, 1)])
+        self._setup_metadata_table(db_conn, temp_dir, [(csv_path, 1)])
 
         column_mapping = {
             "name": ([], "string"),
@@ -1907,7 +1952,7 @@ class TestUpdateTableAdvancedFeatures:
             return f"table_{Path(file_path).stem}"
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table_naming_fn=output_table_naming_fn,
             filetype="csv",
@@ -1917,9 +1962,9 @@ class TestUpdateTableAdvancedFeatures:
         )
 
         # Verify table was created with custom name
-        assert table_exists(db_uri, "test_schema", "table_naming_test")
+        assert table_exists(db_conn, "test_schema", "table_naming_test")
 
-    def test_update_table_with_file_list_filter_fn(self, db_uri, temp_dir):
+    def test_update_table_with_file_list_filter_fn(self, db_conn, temp_dir):
         """Test update_table with file_list_filter_fn"""
         # Create multiple CSV files
         csv1 = temp_dir / "include_me.csv"
@@ -1927,7 +1972,7 @@ class TestUpdateTableAdvancedFeatures:
         csv2 = temp_dir / "exclude_me.csv"
         csv2.write_text("name,value\nBob,200\n")
 
-        self._setup_metadata_table(db_uri, temp_dir, [(csv1, 1), (csv2, 1)])
+        self._setup_metadata_table(db_conn, temp_dir, [(csv1, 1), (csv2, 1)])
 
         column_mapping = {
             "name": ([], "string"),
@@ -1939,7 +1984,7 @@ class TestUpdateTableAdvancedFeatures:
             return [f for f in file_list if "include" in str(f)]
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="filter_output",
             filetype="csv",
@@ -1950,24 +1995,24 @@ class TestUpdateTableAdvancedFeatures:
         )
 
         # Verify only one file was processed
-        result = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.filter_output")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.filter_output")
         assert result[0] == 1
 
-    def test_update_table_with_custom_read_fn(self, db_uri, temp_dir):
+    def test_update_table_with_custom_read_fn(self, db_conn, temp_dir):
         """Test update_table with custom_read_fn"""
         csv_path = temp_dir / "custom_read.csv"
         csv_path.write_text("name,value\nAlice,100\n")
 
-        self._setup_metadata_table(db_uri, temp_dir, [(csv_path, 1)])
+        self._setup_metadata_table(db_conn, temp_dir, [(csv_path, 1)])
 
         # Custom read function that adds a computed column
         def custom_read_fn(full_path):
-            df = pl.read_csv(full_path)
-            df = df.with_columns((pl.col("value") * 10).alias("computed"))
+            df = pd.read_csv(full_path)
+            df["computed"] = df["value"] * 10
             return df
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="custom_read_output",
             filetype="csv",
@@ -1977,15 +2022,15 @@ class TestUpdateTableAdvancedFeatures:
         )
 
         # Verify custom read was used
-        result = execute_sql_fetchone(db_uri, "SELECT computed FROM test_schema.custom_read_output")
+        result = execute_sql_fetchone(db_conn, "SELECT computed FROM test_schema.custom_read_output")
         assert result[0] == 1000
 
-    def test_update_table_with_column_mapping_fn(self, db_uri, temp_dir):
+    def test_update_table_with_column_mapping_fn(self, db_conn, temp_dir):
         """Test update_table with column_mapping_fn"""
         csv_path = temp_dir / "mapping_fn_test.csv"
         csv_path.write_text("name,value\nAlice,100\n")
 
-        self._setup_metadata_table(db_uri, temp_dir, [(csv_path, 1)])
+        self._setup_metadata_table(db_conn, temp_dir, [(csv_path, 1)])
 
         # Dynamic column mapping function
         def column_mapping_fn(file_path):
@@ -1995,7 +2040,7 @@ class TestUpdateTableAdvancedFeatures:
             }
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="mapping_fn_output",
             filetype="csv",
@@ -2005,16 +2050,16 @@ class TestUpdateTableAdvancedFeatures:
         )
 
         # Verify data was loaded
-        result = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.mapping_fn_output")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.mapping_fn_output")
         assert result[0] == 1
 
-    def test_update_table_with_pivot_mapping(self, db_uri, temp_dir):
+    def test_update_table_with_pivot_mapping(self, db_conn, temp_dir):
         """Test update_table with pivot_mapping (unpivot)"""
         csv_path = temp_dir / "pivot_test.csv"
         csv_path.write_text("id,jan,feb,mar\n1,100,200,300\n")
 
         # Note: row_count is 1 but after unpivot it will be 3 (1 * 3 value columns)
-        self._setup_metadata_table(db_uri, temp_dir, [(csv_path, 1)])
+        self._setup_metadata_table(db_conn, temp_dir, [(csv_path, 1)])
 
         column_mapping = {
             "id": ([], "int"),
@@ -2030,7 +2075,7 @@ class TestUpdateTableAdvancedFeatures:
         }
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="pivot_output",
             filetype="csv",
@@ -2041,10 +2086,10 @@ class TestUpdateTableAdvancedFeatures:
         )
 
         # Verify unpivot was applied - should have 3 rows (jan, feb, mar)
-        result = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.pivot_output")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.pivot_output")
         assert result[0] == 3
 
-    def test_update_table_with_sample(self, db_uri, temp_dir):
+    def test_update_table_with_sample(self, db_conn, temp_dir):
         """Test update_table with sample parameter"""
         # Create multiple CSV files
         for i in range(5):
@@ -2052,7 +2097,7 @@ class TestUpdateTableAdvancedFeatures:
             csv_path.write_text(f"name,value\nRow{i},100\n")
 
         files = [(temp_dir / f"sample_{i}.csv", 1) for i in range(5)]
-        self._setup_metadata_table(db_uri, temp_dir, files)
+        self._setup_metadata_table(db_conn, temp_dir, files)
 
         column_mapping = {
             "name": ([], "string"),
@@ -2060,7 +2105,7 @@ class TestUpdateTableAdvancedFeatures:
         }
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="sample_output",
             filetype="csv",
@@ -2071,10 +2116,10 @@ class TestUpdateTableAdvancedFeatures:
         )
 
         # Verify only 2 files were processed
-        result = execute_sql_fetchone(db_uri, "SELECT COUNT(DISTINCT full_path) FROM test_schema.sample_output")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(DISTINCT full_path) FROM test_schema.sample_output")
         assert result[0] == 2
 
-    def test_update_table_resume(self, db_uri, temp_dir):
+    def test_update_table_resume(self, db_conn, temp_dir):
         """Test update_table with resume=True"""
         csv1 = temp_dir / "resume1.csv"
         csv1.write_text("name,value\nAlice,100\n")
@@ -2082,8 +2127,8 @@ class TestUpdateTableAdvancedFeatures:
         csv2.write_text("name,value\nBob,200\n")
 
         # Setup metadata with one file already processed
-        execute_sql(db_uri, "DROP TABLE IF EXISTS test_schema.metadata")
-        execute_sql(db_uri, """
+        execute_sql(db_conn, "DROP TABLE IF EXISTS test_schema.metadata")
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 search_dir TEXT,
                 landing_dir TEXT,
@@ -2104,14 +2149,14 @@ class TestUpdateTableAdvancedFeatures:
         """)
 
         # File 1 is already processed
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             INSERT INTO test_schema.metadata
             (full_path, row_count, metadata_ingest_status, landing_dir, ingest_datetime, status)
             VALUES ($1, $2, $3, $4, NOW(), 'Success')
         """, (str(csv1), 1, "Success", str(temp_dir) + "/"))
 
         # File 2 is not processed yet
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             INSERT INTO test_schema.metadata
             (full_path, row_count, metadata_ingest_status, landing_dir)
             VALUES ($1, $2, $3, $4)
@@ -2123,7 +2168,7 @@ class TestUpdateTableAdvancedFeatures:
         }
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="resume_output",
             filetype="csv",
@@ -2133,15 +2178,15 @@ class TestUpdateTableAdvancedFeatures:
         )
 
         # Verify only the new file was processed
-        result = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.resume_output")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.resume_output")
         assert result[0] == 1
 
-    def test_update_table_with_header_fn(self, db_uri, temp_dir):
+    def test_update_table_with_header_fn(self, db_conn, temp_dir):
         """Test update_table with header_fn for headerless files"""
         csv_path = temp_dir / "no_header.csv"
         csv_path.write_text("Alice,100,85.5\nBob,200,92.0\n")
 
-        self._setup_metadata_table(db_uri, temp_dir, [(csv_path, 2)])
+        self._setup_metadata_table(db_conn, temp_dir, [(csv_path, 2)])
 
         column_mapping = {
             "name": ([], "string"),
@@ -2154,7 +2199,7 @@ class TestUpdateTableAdvancedFeatures:
             return ["name", "value", "score"]
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="header_fn_output",
             filetype="csv",
@@ -2165,7 +2210,7 @@ class TestUpdateTableAdvancedFeatures:
         )
 
         # Verify data was loaded with correct headers
-        result = execute_sql_fetchone(db_uri, "SELECT name, value FROM test_schema.header_fn_output WHERE name = 'Alice'")
+        result = execute_sql_fetchone(db_conn, "SELECT name, value FROM test_schema.header_fn_output WHERE name = 'Alice'")
         assert result[0] == "Alice"
 
 
@@ -2175,12 +2220,12 @@ class TestUpdateTableAdvancedFeatures:
 class TestAddFilesToMetadataTableEndToEnd:
     """End-to-end tests for add_files_to_metadata_table"""
 
-    def test_add_files_to_metadata_table_full_workflow(self, db_uri, temp_dir):
+    def test_add_files_to_metadata_table_full_workflow(self, db_conn, temp_dir):
         """Test complete workflow of add_files_to_metadata_table"""
         import shutil
 
         # Clean up any existing metadata table from previous tests
-        execute_sql(db_uri, "DROP TABLE IF EXISTS test_schema.metadata")
+        execute_sql(db_conn, "DROP TABLE IF EXISTS test_schema.metadata")
 
         # Create search and landing directories
         search_dir = temp_dir / "search"
@@ -2196,7 +2241,7 @@ class TestAddFilesToMetadataTableEndToEnd:
 
         # Call add_files_to_metadata_table
         result_df = add_files_to_metadata_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             search_dir=str(search_dir),
             landing_dir=str(landing_dir),
@@ -2207,16 +2252,16 @@ class TestAddFilesToMetadataTableEndToEnd:
         )
 
         # Verify metadata table was created and populated
-        assert table_exists(db_uri, "test_schema", "metadata")
+        assert table_exists(db_conn, "test_schema", "metadata")
 
-        result = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.metadata")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.metadata")
         assert result[0] == 2
 
         # Verify files were copied to landing directory
         assert (landing_dir / "file1.csv").exists()
         assert (landing_dir / "file2.csv").exists()
 
-    def test_add_files_to_metadata_table_with_zip(self, db_uri, temp_dir):
+    def test_add_files_to_metadata_table_with_zip(self, db_conn, temp_dir):
         """Test add_files_to_metadata_table with ZIP extraction"""
         import shutil
 
@@ -2234,7 +2279,7 @@ class TestAddFilesToMetadataTableEndToEnd:
 
         # Call add_files_to_metadata_table with compression
         result_df = add_files_to_metadata_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             search_dir=str(search_dir),
             landing_dir=str(landing_dir),
@@ -2247,14 +2292,14 @@ class TestAddFilesToMetadataTableEndToEnd:
         )
 
         # Verify metadata table was populated
-        result = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.metadata")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.metadata")
         assert result[0] == 2
 
         # Verify files were extracted
         extracted_files = list(landing_dir.rglob("*.csv"))
         assert len(extracted_files) == 2
 
-    def test_add_files_to_metadata_table_resume(self, db_uri, temp_dir):
+    def test_add_files_to_metadata_table_resume(self, db_conn, temp_dir):
         """Test add_files_to_metadata_table with resume=True"""
         import shutil
 
@@ -2269,7 +2314,7 @@ class TestAddFilesToMetadataTableEndToEnd:
 
         # First run
         add_files_to_metadata_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             search_dir=str(search_dir),
             landing_dir=str(landing_dir),
@@ -2285,7 +2330,7 @@ class TestAddFilesToMetadataTableEndToEnd:
 
         # Second run with resume=True
         result_df = add_files_to_metadata_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             search_dir=str(search_dir),
             landing_dir=str(landing_dir),
@@ -2296,10 +2341,10 @@ class TestAddFilesToMetadataTableEndToEnd:
         )
 
         # Verify both files are in metadata
-        result = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.metadata")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.metadata")
         assert result[0] == 2
 
-    def test_add_files_to_metadata_table_with_filter(self, db_uri, temp_dir):
+    def test_add_files_to_metadata_table_with_filter(self, db_conn, temp_dir):
         """Test add_files_to_metadata_table with file_list_filter_fn"""
         import shutil
 
@@ -2317,7 +2362,7 @@ class TestAddFilesToMetadataTableEndToEnd:
             return [f for f in file_list if "include" in str(f)]
 
         result_df = add_files_to_metadata_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             search_dir=str(search_dir),
             landing_dir=str(landing_dir),
@@ -2329,7 +2374,7 @@ class TestAddFilesToMetadataTableEndToEnd:
         )
 
         # Verify only filtered file was processed
-        result = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.metadata")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.metadata")
         assert result[0] == 1
 
 
@@ -2464,12 +2509,12 @@ class TestCLISchemaInference:
         import subprocess
 
         # Create parquet file
-        test_df = pl.DataFrame({
+        test_df = pd.DataFrame({
             "name": ["Alice", "Bob"],
             "age": [25, 30],
         })
         parquet_path = temp_dir / "test.parquet"
-        test_df.write_parquet(str(parquet_path))
+        test_df.to_parquet(str(parquet_path))
 
         result = subprocess.run(
             ["python", "src/table_functions_postgres.py", str(parquet_path), "--pretty"],
@@ -2490,50 +2535,49 @@ class TestCLISchemaInference:
 class TestConnectionHelpers:
     """Test connection management and SQL helper functions"""
 
-    def test_get_connection_context_manager(self, db_uri):
-        """Test get_connection context manager properly opens and closes connections"""
-        with get_connection(db_uri) as conn:
-            # Connection should be usable
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                result = cur.fetchone()
-                assert result[0] == 1
+    def test_psycopg_connection_basic(self, db_conn):
+        """Test psycopg connection is usable"""
+        # Connection should be usable
+        with db_conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            result = cur.fetchone()
+            assert result[0] == 1
 
-    def test_execute_sql_basic(self, db_uri):
+    def test_execute_sql_basic(self, db_conn):
         """Test execute_sql with basic DDL"""
-        execute_sql(db_uri, "CREATE TABLE test_schema.exec_test (id INT)")
-        assert table_exists(db_uri, "test_schema", "exec_test")
+        execute_sql(db_conn, "CREATE TABLE test_schema.exec_test (id INT)")
+        assert table_exists(db_conn, "test_schema", "exec_test")
 
-    def test_execute_sql_with_params(self, db_uri):
+    def test_execute_sql_with_params(self, db_conn):
         """Test execute_sql with parameters"""
-        execute_sql(db_uri, "CREATE TABLE test_schema.param_test (name TEXT, value INT)")
-        execute_sql(db_uri, "INSERT INTO test_schema.param_test VALUES ($1, $2)", ("Alice", 100))
+        execute_sql(db_conn, "CREATE TABLE test_schema.param_test (name TEXT, value INT)")
+        execute_sql(db_conn, "INSERT INTO test_schema.param_test VALUES ($1, $2)", ("Alice", 100))
 
-        result = execute_sql_fetchone(db_uri, "SELECT name, value FROM test_schema.param_test")
+        result = execute_sql_fetchone(db_conn, "SELECT name, value FROM test_schema.param_test")
         assert result[0] == "Alice"
         assert result[1] == 100
 
-    def test_execute_sql_fetch_multiple_rows(self, db_uri):
+    def test_execute_sql_fetch_multiple_rows(self, db_conn):
         """Test execute_sql_fetch returns all rows"""
-        execute_sql(db_uri, "CREATE TABLE test_schema.multi_test (id INT)")
+        execute_sql(db_conn, "CREATE TABLE test_schema.multi_test (id INT)")
         for i in range(5):
-            execute_sql(db_uri, f"INSERT INTO test_schema.multi_test VALUES ({i})")
+            execute_sql(db_conn, f"INSERT INTO test_schema.multi_test VALUES ({i})")
 
-        results = execute_sql_fetch(db_uri, "SELECT id FROM test_schema.multi_test ORDER BY id")
+        results = execute_sql_fetch(db_conn, "SELECT id FROM test_schema.multi_test ORDER BY id")
         assert len(results) == 5
         assert [r[0] for r in results] == [0, 1, 2, 3, 4]
 
-    def test_execute_sql_fetchone_no_results(self, db_uri):
+    def test_execute_sql_fetchone_no_results(self, db_conn):
         """Test execute_sql_fetchone returns None when no results"""
-        execute_sql(db_uri, "CREATE TABLE test_schema.empty_test (id INT)")
+        execute_sql(db_conn, "CREATE TABLE test_schema.empty_test (id INT)")
 
-        result = execute_sql_fetchone(db_uri, "SELECT id FROM test_schema.empty_test")
+        result = execute_sql_fetchone(db_conn, "SELECT id FROM test_schema.empty_test")
         assert result is None
 
-    def test_execute_sql_invalid_sql(self, db_uri):
+    def test_execute_sql_invalid_sql(self, db_conn):
         """Test execute_sql raises error on invalid SQL"""
         with pytest.raises(Exception):
-            execute_sql(db_uri, "THIS IS NOT VALID SQL")
+            execute_sql(db_conn, "THIS IS NOT VALID SQL")
 
 
 # ===== ENCODING TESTS =====
@@ -2599,11 +2643,11 @@ class TestExcelEdgeCases:
         xlsx_path = temp_dir / "skiprows.xlsx"
 
         # Create Excel with header rows to skip
-        df = pl.DataFrame({
+        df = pd.DataFrame({
             "col1": ["Title Row", "Description", "name", "Alice", "Bob"],
             "col2": ["", "", "age", "25", "30"],
         })
-        df.write_excel(xlsx_path)
+        df.to_excel(xlsx_path, index=False)
 
         column_mapping = {
             "name": ([], "string"),
@@ -2623,11 +2667,11 @@ class TestExcelEdgeCases:
         """Test reading Excel with empty cells"""
         xlsx_path = temp_dir / "empty_cells.xlsx"
 
-        df = pl.DataFrame({
+        df = pd.DataFrame({
             "name": ["Alice", None, "Charlie"],
             "value": [100, 200, None],
         })
-        df.write_excel(xlsx_path)
+        df.to_excel(xlsx_path, index=False)
 
         column_mapping = {
             "name": ([], "string"),
@@ -2641,8 +2685,8 @@ class TestExcelEdgeCases:
 
         assert len(result_df) == 3
         # Check that nulls are preserved
-        assert result_df["name"].null_count() == 1
-        assert result_df["value"].null_count() == 1
+        assert result_df["name"].isna().sum() == 1
+        assert result_df["value"].isna().sum() == 1
 
 
 # ===== FIXED WIDTH EDGE CASES =====
@@ -2702,10 +2746,10 @@ class TestFixedWidthEdgeCases:
 class TestUpdateTableEdgeCases:
     """Test update_table edge cases"""
 
-    def _setup_metadata_table(self, db_uri, temp_dir, csv_files):
+    def _setup_metadata_table(self, db_conn, temp_dir, csv_files):
         """Helper to set up metadata table with files"""
-        execute_sql(db_uri, "DROP TABLE IF EXISTS test_schema.metadata")
-        execute_sql(db_uri, """
+        execute_sql(db_conn, "DROP TABLE IF EXISTS test_schema.metadata")
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 search_dir TEXT,
                 landing_dir TEXT,
@@ -2726,18 +2770,18 @@ class TestUpdateTableEdgeCases:
         """)
 
         for csv_file, row_count in csv_files:
-            execute_sql(db_uri, """
+            execute_sql(db_conn, """
                 INSERT INTO test_schema.metadata
                 (full_path, row_count, metadata_ingest_status, landing_dir)
                 VALUES ($1, $2, $3, $4)
             """, (str(csv_file), row_count, "Success", str(temp_dir) + "/"))
 
-    def test_update_table_empty_file(self, db_uri, temp_dir):
+    def test_update_table_empty_file(self, db_conn, temp_dir):
         """Test update_table with empty CSV file (header only)"""
         csv_path = temp_dir / "empty.csv"
         csv_path.write_text("name,value\n")  # Header only, no data
 
-        self._setup_metadata_table(db_uri, temp_dir, [(csv_path, 0)])
+        self._setup_metadata_table(db_conn, temp_dir, [(csv_path, 0)])
 
         column_mapping = {
             "name": ([], "string"),
@@ -2745,7 +2789,7 @@ class TestUpdateTableEdgeCases:
         }
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="empty_output",
             filetype="csv",
@@ -2755,16 +2799,16 @@ class TestUpdateTableEdgeCases:
         )
 
         # Table should exist but be empty
-        assert table_exists(db_uri, "test_schema", "empty_output")
-        count = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.empty_output")
+        assert table_exists(db_conn, "test_schema", "empty_output")
+        count = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.empty_output")
         assert count[0] == 0
 
-    def test_update_table_with_null_value_string(self, db_uri, temp_dir):
+    def test_update_table_with_null_value_string(self, db_conn, temp_dir):
         """Test update_table with custom null value string"""
         csv_path = temp_dir / "null_string.csv"
         csv_path.write_text("name,value\nAlice,100\nNA,NA\nBob,200\n")
 
-        self._setup_metadata_table(db_uri, temp_dir, [(csv_path, 3)])
+        self._setup_metadata_table(db_conn, temp_dir, [(csv_path, 3)])
 
         column_mapping = {
             "name": ([], "string"),
@@ -2772,7 +2816,7 @@ class TestUpdateTableEdgeCases:
         }
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="null_string_output",
             filetype="csv",
@@ -2783,16 +2827,16 @@ class TestUpdateTableEdgeCases:
         )
 
         # Check that NA was treated as null
-        result = execute_sql_fetch(db_uri, "SELECT name, value FROM test_schema.null_string_output ORDER BY value NULLS FIRST")
+        result = execute_sql_fetch(db_conn, "SELECT name, value FROM test_schema.null_string_output ORDER BY value NULLS FIRST")
         # First row should have null value
         assert result[0][1] is None
 
-    def test_update_table_pivot_multiple_value_columns(self, db_uri, temp_dir):
+    def test_update_table_pivot_multiple_value_columns(self, db_conn, temp_dir):
         """Test update_table with pivot_mapping with multiple id columns"""
         csv_path = temp_dir / "multi_pivot.csv"
         csv_path.write_text("id,region,q1,q2,q3,q4\n1,East,100,200,300,400\n2,West,150,250,350,450\n")
 
-        self._setup_metadata_table(db_uri, temp_dir, [(csv_path, 2)])
+        self._setup_metadata_table(db_conn, temp_dir, [(csv_path, 2)])
 
         column_mapping = {
             "id": ([], "int"),
@@ -2810,7 +2854,7 @@ class TestUpdateTableEdgeCases:
         }
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="multi_pivot_output",
             filetype="csv",
@@ -2821,21 +2865,21 @@ class TestUpdateTableEdgeCases:
         )
 
         # Should have 8 rows (2 ids * 4 quarters)
-        count = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.multi_pivot_output")
+        count = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.multi_pivot_output")
         assert count[0] == 8
 
         # Verify structure
-        result = execute_sql_fetchone(db_uri, "SELECT id, region, quarter, sales FROM test_schema.multi_pivot_output LIMIT 1")
+        result = execute_sql_fetchone(db_conn, "SELECT id, region, quarter, sales FROM test_schema.multi_pivot_output LIMIT 1")
         assert result is not None
 
-    def test_update_table_retry_failed(self, db_uri, temp_dir):
+    def test_update_table_retry_failed(self, db_conn, temp_dir):
         """Test update_table with retry_failed=True"""
         csv_path = temp_dir / "retry.csv"
         csv_path.write_text("name,value\nAlice,100\n")
 
         # Setup metadata with a failed file
-        execute_sql(db_uri, "DROP TABLE IF EXISTS test_schema.metadata")
-        execute_sql(db_uri, """
+        execute_sql(db_conn, "DROP TABLE IF EXISTS test_schema.metadata")
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 search_dir TEXT,
                 landing_dir TEXT,
@@ -2854,7 +2898,7 @@ class TestUpdateTableEdgeCases:
                 unpivot_row_multiplier INTEGER
             )
         """)
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             INSERT INTO test_schema.metadata
             (full_path, row_count, metadata_ingest_status, landing_dir, status, error_message)
             VALUES ($1, $2, $3, $4, $5, $6)
@@ -2866,7 +2910,7 @@ class TestUpdateTableEdgeCases:
         }
 
         result_df = update_table(
-            uri=db_uri,
+            conn=db_conn,
             schema="test_schema",
             output_table="retry_output",
             filetype="csv",
@@ -2876,7 +2920,7 @@ class TestUpdateTableEdgeCases:
         )
 
         # File should have been reprocessed
-        count = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.retry_output")
+        count = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.retry_output")
         assert count[0] == 1
 
 
@@ -2903,9 +2947,9 @@ class TestTypeInferenceEdgeCases:
 
         result = infer_schema_from_file(str(csv_path))
 
-        # Empty column should be inferred as string
+        # Empty column gets inferred as float by pandas (NaN values are float)
         assert "empty_col" in result
-        assert result["empty_col"][1] == "string"
+        assert result["empty_col"][1] == "float"
 
     def test_infer_schema_boolean_column(self, temp_dir):
         """Test schema inference with boolean values"""
@@ -2999,30 +3043,30 @@ class TestCsvHeaderRowCountEdgeCases:
 class TestDropFunctionsEdgeCases:
     """Test drop functions with edge cases"""
 
-    def test_drop_search_dir_no_matches(self, db_uri):
+    def test_drop_search_dir_no_matches(self, db_conn):
         """Test drop_search_dir when no files match"""
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 search_dir TEXT,
                 full_path TEXT PRIMARY KEY
             )
         """)
-        execute_sql(db_uri, "INSERT INTO test_schema.metadata VALUES ($1, $2)", ("/some/path", "/some/path/file.csv"))
+        execute_sql(db_conn, "INSERT INTO test_schema.metadata VALUES ($1, $2)", ("/some/path", "/some/path/file.csv"))
 
         # Drop with non-matching path
         drop_search_dir(
-            uri=db_uri,
+            conn=db_conn,
             search_dir="/nonexistent/path",
             schema="test_schema",
         )
 
         # Original row should still exist
-        count = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.metadata")
+        count = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.metadata")
         assert count[0] == 1
 
-    def test_drop_partition_with_special_chars(self, db_uri):
+    def test_drop_partition_with_special_chars(self, db_conn):
         """Test drop_partition with special characters in path"""
-        execute_sql(db_uri, """
+        execute_sql(db_conn, """
             CREATE TABLE test_schema.special_test (
                 full_path TEXT,
                 data TEXT
@@ -3030,16 +3074,16 @@ class TestDropFunctionsEdgeCases:
         """)
         # Path with special characters
         special_path = "/path/with spaces/and'quotes/file.csv"
-        execute_sql(db_uri, f"INSERT INTO test_schema.special_test VALUES ('{special_path.replace(chr(39), chr(39)+chr(39))}', 'data')")
+        execute_sql(db_conn, f"INSERT INTO test_schema.special_test VALUES ('{special_path.replace(chr(39), chr(39)+chr(39))}', 'data')")
 
         drop_partition(
-            uri=db_uri,
+            conn=db_conn,
             table="special_test",
             partition_key=special_path,
             schema="test_schema",
         )
 
-        count = execute_sql_fetchone(db_uri, "SELECT COUNT(*) FROM test_schema.special_test")
+        count = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.special_test")
         assert count[0] == 0
 
 
