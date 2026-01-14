@@ -57,12 +57,16 @@ CREATE SCHEMA raw;
 ### 2. Create a Data Ingestion Script
 
 ```python
-import psycopg
 from pathlib import Path
 from src.table_functions_postgres import add_files_to_metadata_table, update_table
+import psycopg
 
-# Connect to PostgreSQL
-conn = psycopg.connect("postgresql://user@localhost:5432/mydb", autocommit=False)
+# Connection string (module manages connections internally)
+conninfo = "postgresql://user@localhost:5432/mydb"
+
+# Create schema (one-time setup)
+with psycopg.connect(conninfo) as conn:
+    conn.execute("CREATE SCHEMA IF NOT EXISTS raw")
 
 # Setup paths
 search_dir = Path("data/raw")
@@ -80,7 +84,7 @@ column_mapping = {
 
 # Extract files from ZIP and add to metadata
 add_files_to_metadata_table(
-    conn=conn,
+    conninfo=conninfo,
     schema="raw",
     search_dir=str(search_dir),
     landing_dir=str(landing_dir),
@@ -97,7 +101,7 @@ def header_fn(file):
     return list(column_mapping.keys())
 
 update_table(
-    conn=conn,
+    conninfo=conninfo,
     schema="raw",
     output_table="my_table",
     filetype="csv",
@@ -107,6 +111,23 @@ update_table(
     landing_dir=str(landing_dir),
     resume=True,
 )
+```
+
+### Connection String Format
+
+The `conninfo` parameter accepts standard PostgreSQL connection strings:
+
+```python
+# URI format (recommended)
+conninfo = "postgresql://user:password@host:port/database"
+
+# Examples
+conninfo = "postgresql://tanner@localhost:5432/postgres"  # No password (local trust)
+conninfo = "postgresql://user:secret@db.example.com/mydb"  # With password
+conninfo = "postgresql://user@localhost/mydb?sslmode=require"  # With options
+
+# Keyword format (alternative)
+conninfo = "host=localhost port=5432 dbname=mydb user=tanner"
 ```
 
 ## Key Concepts
