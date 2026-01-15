@@ -115,7 +115,7 @@ pytest tests/test_table_functions_postgres.py -v
 ### Integration Tests (4 tests)
 - `add_files()` - File copying and metadata generation
 - `extract_and_add_zip_files()` - ZIP extraction
-- `drop_search_dir()` - Metadata cleanup
+- `drop_metadata_by_source()` - Metadata cleanup
 - `drop_partition()` - Partition deletion
 
 ### Edge Cases (4 tests)

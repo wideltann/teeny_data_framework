@@ -64,7 +64,7 @@ class TestGetFileMetadataRow:
         try:
             # Call function
             result = get_file_metadata_row(
-                search_dir=Path("data/raw"),
+                source_dir=Path("data/raw"),
                 landing_dir=Path("data/landing"),
                 file=temp_file,
                 filetype="csv",
@@ -90,7 +90,7 @@ class TestGetFileMetadataRow:
         from src.table_functions_postgres import get_file_metadata_row
 
         result = get_file_metadata_row(
-            search_dir=Path("data/raw"),
+            source_dir=Path("data/raw"),
             landing_dir=Path("data/landing"),
             file=Path("nonexistent.csv"),
             filetype="csv",
@@ -134,7 +134,7 @@ class TestGetFileMetadataRow:
 
                     # Call function
                     result = get_file_metadata_row(
-                        search_dir="s3://my-bucket/raw/",
+                        source_dir="s3://my-bucket/raw/",
                         landing_dir=Path("data/landing"),
                         file="s3://my-bucket/data/file.csv",
                         filetype="csv",
@@ -169,18 +169,18 @@ class TestAddFilesWithS3:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
-            search_dir = tmpdir / "search"
+            source_dir = tmpdir / "search"
             landing_dir = tmpdir / "landing"
-            search_dir.mkdir()
+            source_dir.mkdir()
             landing_dir.mkdir()
 
             # Create temp file
-            test_file = search_dir / "test.csv"
+            test_file = source_dir / "test.csv"
             test_file.write_text("col1,col2\n1,2\n")
 
             # Call function
             result = add_files(
-                search_dir=search_dir,
+                source_dir=source_dir,
                 landing_dir=landing_dir,
                 resume=False,
                 sample=None,
@@ -189,7 +189,7 @@ class TestAddFilesWithS3:
                 has_header=True,
                 full_path_list=[],
                 encoding="utf-8",
-                num_search_dir_parents=0,
+                num_source_parents=0,
             )
 
             # Assertions

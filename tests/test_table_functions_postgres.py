@@ -59,7 +59,7 @@ from src.table_functions_postgres import (
     add_files_to_metadata_table,
     extract_and_add_zip_files,
     add_files,
-    drop_search_dir,
+    drop_metadata_by_source,
     drop_partition,
     drop_file_from_metadata_and_table,
     # Schema inference
@@ -913,7 +913,7 @@ class TestMetadataFunctions:
     def test_get_file_metadata_row_csv(self, sample_csv_file, temp_dir):
         """Test generating metadata row for CSV file"""
         row = get_file_metadata_row(
-            search_dir=temp_dir,
+            source_dir=temp_dir,
             landing_dir=temp_dir,
             file=sample_csv_file,
             filetype="csv",
@@ -931,7 +931,7 @@ class TestMetadataFunctions:
     def test_get_file_metadata_row_with_error(self, temp_dir):
         """Test metadata row generation with error"""
         row = get_file_metadata_row(
-            search_dir=temp_dir,
+            source_dir=temp_dir,
             landing_dir=temp_dir,
             file=None,
             filetype="csv",
@@ -1300,20 +1300,20 @@ class TestIntegration:
     def test_add_files_to_metadata_table(self, conninfo, db_conn, temp_dir, sample_csv_file):
         """Test adding files to metadata table"""
         # Create search and landing directories
-        search_dir = temp_dir / "search"
+        source_dir = temp_dir / "search"
         landing_dir = temp_dir / "landing"
-        search_dir.mkdir()
+        source_dir.mkdir()
         landing_dir.mkdir()
 
         # Copy CSV to search dir
         import shutil
-        dest_file = search_dir / "test.csv"
+        dest_file = source_dir / "test.csv"
         shutil.copy(sample_csv_file, dest_file)
 
         # Test the add_files function (sub-function of add_files_to_metadata_table)
         file_list = [dest_file]
         rows = add_files(
-            search_dir=search_dir,
+            source_dir=source_dir,
             landing_dir=landing_dir,
             resume=False,
             sample=None,
@@ -1322,7 +1322,7 @@ class TestIntegration:
             has_header=True,
             full_path_list=[],
             encoding="utf-8",
-            num_search_dir_parents=0,
+            num_source_parents=0,
         )
 
         assert len(rows) == 1
@@ -1338,7 +1338,7 @@ class TestIntegration:
         rows = extract_and_add_zip_files(
             file_list=file_list,
             full_path_list=[],
-            search_dir=temp_dir,
+            source_dir=temp_dir,
             landing_dir=landing_dir,
             has_header=True,
             filetype="csv",
@@ -1346,7 +1346,7 @@ class TestIntegration:
             sample=None,
             encoding="utf-8",
             archive_glob="*.csv",
-            num_search_dir_parents=0,
+            num_source_parents=0,
         )
 
         assert len(rows) == 2  # Two CSV files in the ZIP
@@ -1355,12 +1355,12 @@ class TestIntegration:
         extracted_files = list(landing_dir.rglob("*.csv"))
         assert len(extracted_files) == 2
 
-    def test_drop_search_dir(self, conninfo, db_conn, temp_dir):
-        """Test dropping files from metadata by search_dir"""
+    def test_drop_metadata_by_source(self, conninfo, db_conn, temp_dir):
+        """Test dropping files from metadata by source_dir"""
         # Create metadata table
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                search_dir TEXT,
+                source_dir TEXT,
                 full_path TEXT PRIMARY KEY
             )
         """)
@@ -1373,9 +1373,9 @@ class TestIntegration:
             (str(temp_dir), str(temp_dir / "file2.csv"))
         )
 
-        drop_search_dir(
+        drop_metadata_by_source(
             conninfo=conninfo,
-            search_dir=str(temp_dir),
+            source_dir=str(temp_dir),
             schema="test_schema",
         )
 
@@ -1646,7 +1646,7 @@ class TestMissingFunctions:
         # Create metadata table first
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                search_dir TEXT,
+                source_dir TEXT,
                 landing_dir TEXT,
                 full_path TEXT PRIMARY KEY,
                 filesize BIGINT,
@@ -1702,14 +1702,14 @@ class TestMissingFunctions:
         execute_sql(db_conn, "DROP TABLE IF EXISTS test_schema.metadata")
 
         # Create search and landing directories
-        search_dir = temp_dir / "search"
+        source_dir = temp_dir / "search"
         landing_dir = temp_dir / "landing"
-        search_dir.mkdir()
+        source_dir.mkdir()
         landing_dir.mkdir()
 
         # Copy CSV to search dir
         import shutil
-        dest_file = search_dir / "test.csv"
+        dest_file = source_dir / "test.csv"
         shutil.copy(sample_csv_file, dest_file)
 
         # This would call add_files_to_metadata_table but it's complex
@@ -1721,7 +1721,7 @@ class TestMissingFunctions:
         # Create metadata table manually to test the schema
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                search_dir TEXT,
+                source_dir TEXT,
                 landing_dir TEXT,
                 full_path TEXT PRIMARY KEY,
                 filesize BIGINT,
@@ -1870,7 +1870,7 @@ class TestUpdateTableAdvancedFeatures:
         execute_sql(db_conn, "DROP TABLE IF EXISTS test_schema.metadata")
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                search_dir TEXT,
+                source_dir TEXT,
                 landing_dir TEXT,
                 full_path TEXT PRIMARY KEY,
                 filesize BIGINT,
@@ -2159,7 +2159,7 @@ class TestUpdateTableAdvancedFeatures:
         execute_sql(db_conn, "DROP TABLE IF EXISTS test_schema.metadata")
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                search_dir TEXT,
+                source_dir TEXT,
                 landing_dir TEXT,
                 full_path TEXT PRIMARY KEY,
                 filesize BIGINT,
@@ -2257,22 +2257,22 @@ class TestAddFilesToMetadataTableEndToEnd:
         execute_sql(db_conn, "DROP TABLE IF EXISTS test_schema.metadata")
 
         # Create search and landing directories
-        search_dir = temp_dir / "search"
+        source_dir = temp_dir / "search"
         landing_dir = temp_dir / "landing"
-        search_dir.mkdir()
+        source_dir.mkdir()
         landing_dir.mkdir()
 
         # Create test CSV files
-        csv1 = search_dir / "file1.csv"
+        csv1 = source_dir / "file1.csv"
         csv1.write_text("col1,col2\n1,2\n3,4\n")
-        csv2 = search_dir / "file2.csv"
+        csv2 = source_dir / "file2.csv"
         csv2.write_text("col1,col2\n5,6\n7,8\n")
 
         # Call add_files_to_metadata_table
         result_df = add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            search_dir=str(search_dir),
+            source_dir=str(source_dir),
             landing_dir=str(landing_dir),
             filetype="csv",
             has_header=True,
@@ -2295,13 +2295,13 @@ class TestAddFilesToMetadataTableEndToEnd:
         import shutil
 
         # Create search and landing directories
-        search_dir = temp_dir / "search"
+        source_dir = temp_dir / "search"
         landing_dir = temp_dir / "landing"
-        search_dir.mkdir()
+        source_dir.mkdir()
         landing_dir.mkdir()
 
         # Create a ZIP file with CSV files
-        zip_path = search_dir / "archive.zip"
+        zip_path = source_dir / "archive.zip"
         with zipfile.ZipFile(zip_path, 'w') as zf:
             zf.writestr("inner1.csv", "col1,col2\n1,2\n")
             zf.writestr("inner2.csv", "col1,col2\n3,4\n")
@@ -2310,7 +2310,7 @@ class TestAddFilesToMetadataTableEndToEnd:
         result_df = add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            search_dir=str(search_dir),
+            source_dir=str(source_dir),
             landing_dir=str(landing_dir),
             filetype="csv",
             compression_type="zip",
@@ -2332,20 +2332,20 @@ class TestAddFilesToMetadataTableEndToEnd:
         """Test add_files_to_metadata_table with resume=True"""
         import shutil
 
-        search_dir = temp_dir / "search"
+        source_dir = temp_dir / "search"
         landing_dir = temp_dir / "landing"
-        search_dir.mkdir()
+        source_dir.mkdir()
         landing_dir.mkdir()
 
         # Create initial file and process it
-        csv1 = search_dir / "file1.csv"
+        csv1 = source_dir / "file1.csv"
         csv1.write_text("col1,col2\n1,2\n")
 
         # First run
         add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            search_dir=str(search_dir),
+            source_dir=str(source_dir),
             landing_dir=str(landing_dir),
             filetype="csv",
             has_header=True,
@@ -2354,14 +2354,14 @@ class TestAddFilesToMetadataTableEndToEnd:
         )
 
         # Add a new file
-        csv2 = search_dir / "file2.csv"
+        csv2 = source_dir / "file2.csv"
         csv2.write_text("col1,col2\n3,4\n")
 
         # Second run with resume=True
         result_df = add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            search_dir=str(search_dir),
+            source_dir=str(source_dir),
             landing_dir=str(landing_dir),
             filetype="csv",
             has_header=True,
@@ -2377,14 +2377,14 @@ class TestAddFilesToMetadataTableEndToEnd:
         """Test add_files_to_metadata_table with file_list_filter_fn"""
         import shutil
 
-        search_dir = temp_dir / "search"
+        source_dir = temp_dir / "search"
         landing_dir = temp_dir / "landing"
-        search_dir.mkdir()
+        source_dir.mkdir()
         landing_dir.mkdir()
 
         # Create multiple CSV files
-        (search_dir / "include.csv").write_text("col1,col2\n1,2\n")
-        (search_dir / "exclude.csv").write_text("col1,col2\n3,4\n")
+        (source_dir / "include.csv").write_text("col1,col2\n1,2\n")
+        (source_dir / "exclude.csv").write_text("col1,col2\n3,4\n")
 
         # Filter function
         def file_list_filter_fn(file_list):
@@ -2393,7 +2393,7 @@ class TestAddFilesToMetadataTableEndToEnd:
         result_df = add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            search_dir=str(search_dir),
+            source_dir=str(source_dir),
             landing_dir=str(landing_dir),
             filetype="csv",
             has_header=True,
@@ -2780,7 +2780,7 @@ class TestUpdateTableEdgeCases:
         execute_sql(db_conn, "DROP TABLE IF EXISTS test_schema.metadata")
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                search_dir TEXT,
+                source_dir TEXT,
                 landing_dir TEXT,
                 full_path TEXT PRIMARY KEY,
                 filesize BIGINT,
@@ -2910,7 +2910,7 @@ class TestUpdateTableEdgeCases:
         execute_sql(db_conn, "DROP TABLE IF EXISTS test_schema.metadata")
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                search_dir TEXT,
+                source_dir TEXT,
                 landing_dir TEXT,
                 full_path TEXT PRIMARY KEY,
                 filesize BIGINT,
@@ -3072,20 +3072,20 @@ class TestCsvHeaderRowCountEdgeCases:
 class TestDropFunctionsEdgeCases:
     """Test drop functions with edge cases"""
 
-    def test_drop_search_dir_no_matches(self, conninfo, db_conn):
-        """Test drop_search_dir when no files match"""
+    def test_drop_metadata_by_source_no_matches(self, conninfo, db_conn):
+        """Test drop_metadata_by_source when no files match"""
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                search_dir TEXT,
+                source_dir TEXT,
                 full_path TEXT PRIMARY KEY
             )
         """)
         execute_sql(db_conn, "INSERT INTO test_schema.metadata VALUES ($1, $2)", ("/some/path", "/some/path/file.csv"))
 
         # Drop with non-matching path
-        drop_search_dir(
+        drop_metadata_by_source(
             conninfo=conninfo,
-            search_dir="/nonexistent/path",
+            source_dir="/nonexistent/path",
             schema="test_schema",
         )
 
@@ -3190,7 +3190,7 @@ class TestConnectionStringHandling:
         add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            search_dir=str(csv_dir),
+            source_dir=str(csv_dir),
             landing_dir=str(landing_dir),
             filetype="csv",
             has_header=True,
@@ -3234,7 +3234,7 @@ class TestConnectionStringHandling:
         add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            search_dir=str(csv_dir),
+            source_dir=str(csv_dir),
             landing_dir=str(landing_dir),
             filetype="csv",
             has_header=True,
@@ -3270,7 +3270,7 @@ class TestConnectionStringHandling:
         # Setup: create metadata table and data table
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                search_dir TEXT,
+                source_dir TEXT,
                 full_path TEXT PRIMARY KEY
             )
         """)
@@ -3301,10 +3301,10 @@ class TestConnectionStringHandling:
         result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.data_table")
         assert result[0] == 0
 
-        # Test drop_search_dir with conninfo
-        drop_search_dir(
+        # Test drop_metadata_by_source with conninfo
+        drop_metadata_by_source(
             conninfo=conninfo,
-            search_dir="/search/path",
+            source_dir="/search/path",
             schema="test_schema",
         )
 
@@ -3330,7 +3330,7 @@ class TestConnectionStringHandling:
         add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            search_dir=str(csv_dir),
+            source_dir=str(csv_dir),
             landing_dir=str(landing_dir),
             filetype="csv",
             has_header=True,
@@ -3378,7 +3378,7 @@ class TestConnectionStringHandling:
         add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            search_dir=str(csv_dir),
+            source_dir=str(csv_dir),
             landing_dir=str(landing_dir),
             filetype="csv",
             has_header=True,

@@ -98,6 +98,89 @@ def get_s3_filesystem(filesystem: Optional[Any] = None) -> Any:
     return s3fs.S3FileSystem()
 
 
+def get_persistent_temp_dir() -> Path:
+    """
+    Get persistent temp directory in current working directory.
+    Creates temp/ directory if it doesn't exist.
+
+    Returns:
+        Path to temp/ directory (e.g., /path/to/project/temp)
+    """
+    temp_dir = Path.cwd() / "temp"
+    temp_dir.mkdir(exist_ok=True, parents=True)
+    return temp_dir
+
+
+def get_cache_path_from_s3(s3_path: str) -> Path:
+    """
+    Convert S3 path to local cache path that mirrors the S3 structure.
+
+    Args:
+        s3_path: S3 path (e.g., "s3://my-bucket/raw-data/file.zip")
+
+    Returns:
+        Path to cached file location (e.g., temp/my-bucket/raw-data/file.zip)
+
+    Examples:
+        s3://my-bucket/raw-data/census/file.zip
+        -> temp/my-bucket/raw-data/census/file.zip
+
+        s3://bucket/subfolder/data.csv
+        -> temp/bucket/subfolder/data.csv
+    """
+    # Remove s3:// prefix
+    path_without_prefix = s3_path.replace("s3://", "")
+    # Build cache path that mirrors S3 structure
+    cache_path = get_persistent_temp_dir() / path_without_prefix
+    # Ensure parent directories exist
+    cache_path.parent.mkdir(exist_ok=True, parents=True)
+    return cache_path
+
+
+def download_s3_file_with_cache(s3_path: str, filesystem: Any) -> Path:
+    """
+    Download S3 file to persistent cache, reusing cached file if it exists with matching size.
+    Files are cached in temp/ directory with structure mirroring S3 paths.
+
+    Args:
+        s3_path: S3 path to download (e.g., "s3://bucket/path/file.zip")
+        filesystem: s3fs.S3FileSystem instance
+
+    Returns:
+        Path to cached file in temp/ directory
+
+    Cache Strategy:
+        - Checks if file exists in cache
+        - Compares file sizes (S3 vs cached)
+        - Only re-downloads if sizes differ or file missing
+        - Cached files persist across runs until manually deleted
+    """
+    cache_path = get_cache_path_from_s3(s3_path)
+
+    # Get S3 file size
+    s3_info = filesystem.info(s3_path)
+    s3_size = s3_info['size']
+
+    # Check if cached file exists and matches size
+    if cache_path.exists():
+        cached_size = cache_path.stat().st_size
+        if cached_size == s3_size:
+            print(f"Cache HIT: Using cached {cache_path.relative_to(Path.cwd())}")
+            return cache_path
+        else:
+            print(f"Cache MISS: Size mismatch for {s3_path}")
+            print(f"  Cached: {cached_size} bytes, S3: {s3_size} bytes")
+    else:
+        print(f"Cache MISS: {s3_path} not in cache")
+
+    # Download from S3 to cache
+    print(f"Downloading {s3_path} -> {cache_path.relative_to(Path.cwd())}")
+    filesystem.get(s3_path, str(cache_path))
+    print(f"Cached successfully ({s3_size} bytes)")
+
+    return cache_path
+
+
 def prepare_column_mapping(
     header: List[str], column_mapping: Dict[str, Tuple[List[str], str]]
 ) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
@@ -775,17 +858,12 @@ def update_table(
 
         # Check if file is in S3
         file_is_s3 = is_s3_path(full_path)
-        temp_file_path = None
 
-        # Download S3 file to temp location if needed
+        # Download S3 file to persistent cache if needed
         if file_is_s3:
-            import tempfile
-
             fs = get_s3_filesystem(filesystem)
-            temp_file_path = Path(tempfile.gettempdir()) / path_basename(full_path)
-            fs.get(full_path, str(temp_file_path))
-            print(f"Downloaded {full_path} to temporary location for processing")
-            read_path = str(temp_file_path)
+            cached_file = download_s3_file_with_cache(full_path, fs)
+            read_path = str(cached_file)
         else:
             read_path = full_path
 
@@ -896,10 +974,6 @@ def update_table(
             if len(error_str) > 200:
                 error_str = error_str[:200] + "... [truncated]"
             print(f"Failed on {file} with {error_str}")
-        finally:
-            # Cleanup temp file if it was created
-            if temp_file_path and temp_file_path.exists():
-                temp_file_path.unlink()
 
     # Return metadata results
     sql = f"""
@@ -960,7 +1034,7 @@ def get_csv_header_and_row_count(
 def extract_and_add_zip_files(
     file_list: Optional[List[str]] = None,
     full_path_list: Optional[List[str]] = None,
-    search_dir: Optional[str] = None,
+    source_dir: Optional[str] = None,
     landing_dir: Optional[str] = None,
     has_header: bool = True,
     filetype: Optional[str] = None,
@@ -968,7 +1042,7 @@ def extract_and_add_zip_files(
     sample: Optional[int] = None,
     encoding: Optional[str] = None,
     archive_glob: Optional[str] = None,
-    num_search_dir_parents: int = 0,
+    num_source_parents: int = 0,
     filesystem: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """
@@ -982,10 +1056,9 @@ def extract_and_add_zip_files(
         import zipfile
 
     import fnmatch
-    import tempfile
 
     # Normalize paths
-    search_dir = normalize_path(search_dir) if search_dir else None
+    source_dir = normalize_path(source_dir) if source_dir else None
     landing_dir = normalize_path(landing_dir) if landing_dir else None
 
     rows = []
@@ -993,11 +1066,6 @@ def extract_and_add_zip_files(
 
     # Check if landing_dir is S3
     landing_is_s3 = is_s3_path(landing_dir) if landing_dir else False
-    temp_landing_base = None
-    if landing_is_s3:
-        # Create temp directory for extraction before upload to S3
-        temp_landing_base = Path(tempfile.gettempdir()) / "teeny_data_s3_landing"
-        temp_landing_base.mkdir(exist_ok=True, parents=True)
 
     # Get filesystem if any S3 paths involved
     fs = None
@@ -1013,13 +1081,10 @@ def extract_and_add_zip_files(
 
         compressed_str = str(compressed)
 
-        # Download from S3 if needed
-        temp_zip = None
+        # Download from S3 if needed (uses persistent cache)
         if is_s3_path(compressed_str):
-            temp_zip = Path(tempfile.gettempdir()) / path_basename(compressed_str)
-            fs.get(compressed_str, str(temp_zip))
-            print(f"Downloaded {compressed_str} to temporary location")
-            zip_path = str(temp_zip)
+            cached_zip = download_s3_file_with_cache(compressed_str, fs)
+            zip_path = str(cached_zip)
         else:
             zip_path = compressed_str
 
@@ -1041,9 +1106,9 @@ def extract_and_add_zip_files(
                 )
 
                 # Get parent directories from path
-                if num_search_dir_parents > 0:
+                if num_source_parents > 0:
                     parts = compressed_str.replace("s3://", "").split("/")
-                    parent_parts = parts[-(num_search_dir_parents + 1) : -1]
+                    parent_parts = parts[-(num_source_parents + 1) : -1]
                     parents = "/".join(parent_parts) if parent_parts else ""
                 else:
                     parents = ""
@@ -1062,13 +1127,11 @@ def extract_and_add_zip_files(
 
                 # Handle S3 or local landing directory
                 if landing_is_s3:
-                    # Extract to temp directory first
-                    if parents:
-                        temp_output_dir = temp_landing_base / parents / zip_stem
-                    else:
-                        temp_output_dir = temp_landing_base / zip_stem
-                    temp_output_dir.mkdir(exist_ok=True, parents=True)
-                    temp_output_path = temp_output_dir / compressed_file_basename
+                    # Extract to temp directory that mirrors the S3 landing structure
+                    # e.g., s3://bucket/landing/file.txt -> temp/bucket/landing/file.txt
+                    landing_path_without_prefix = raw_output_path.replace("s3://", "")
+                    temp_output_path = get_persistent_temp_dir() / landing_path_without_prefix
+                    temp_output_path.parent.mkdir(exist_ok=True, parents=True)
                 else:
                     # Local landing directory
                     raw_output_dir = path_parent(raw_output_path)
@@ -1083,18 +1146,32 @@ def extract_and_add_zip_files(
                 try:
                     # Extract to temp location (or final location if local)
                     if landing_is_s3:
-                        zip_ref.extract(f, str(temp_output_dir))
-                        print(f"{file_num} Extracted {f} to temporary location")
+                        # Extract to temp directory, then move to final location
+                        # zip_ref.extract() preserves internal ZIP structure, so we need a temp dir
+                        temp_extract_dir = get_persistent_temp_dir() / "_zip_extract"
+                        temp_extract_dir.mkdir(exist_ok=True, parents=True)
+
+                        # Extract file (preserves internal path from ZIP)
+                        zip_ref.extract(f, str(temp_extract_dir))
+                        extracted_file = temp_extract_dir / f
+
+                        # Move to final location mirroring S3 structure
+                        import shutil
+                        shutil.move(str(extracted_file), str(temp_output_path))
+                        print(f"{file_num} Extracted to {temp_output_path}")
 
                         # Upload to S3
                         fs.put(str(temp_output_path), raw_output_path)
                         print(f"{file_num} Uploaded to {raw_output_path}")
+
+                        # Cleanup temp extract location
+                        shutil.rmtree(temp_extract_dir, ignore_errors=True)
                     else:
                         zip_ref.extract(f, raw_output_dir)
                         print(f"{file_num} Extracted {f} to {raw_output_dir}")
 
                     row = get_file_metadata_row(
-                        search_dir=search_dir,
+                        source_dir=source_dir,
                         landing_dir=landing_dir,
                         filetype=filetype,
                         archive_full_path=compressed_str,
@@ -1108,7 +1185,7 @@ def extract_and_add_zip_files(
                     print(f"Failed on {f} with {e}")
 
                     row = get_file_metadata_row(
-                        search_dir=search_dir,
+                        source_dir=source_dir,
                         landing_dir=landing_dir,
                         filetype=filetype,
                         file=None,
@@ -1138,21 +1215,11 @@ def extract_and_add_zip_files(
 
                 rows.append(row)
 
-        # Cleanup downloaded zip file from S3
-        if temp_zip and temp_zip.exists():
-            temp_zip.unlink()
-
-    # Cleanup temp landing directory if using S3
-    if temp_landing_base and temp_landing_base.exists():
-        import shutil
-
-        shutil.rmtree(temp_landing_base, ignore_errors=True)
-
     return rows
 
 
 def add_files(
-    search_dir: Optional[str] = None,
+    source_dir: Optional[str] = None,
     landing_dir: Optional[str] = None,
     resume: Optional[bool] = None,
     sample: Optional[int] = None,
@@ -1161,7 +1228,7 @@ def add_files(
     has_header: bool = True,
     full_path_list: Optional[List[str]] = None,
     encoding: Optional[str] = None,
-    num_search_dir_parents: int = 0,
+    num_source_parents: int = 0,
     filesystem: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """
@@ -1169,10 +1236,9 @@ def add_files(
     All paths are strings (both local and S3).
     """
     import shutil
-    import tempfile
 
     # Normalize paths
-    search_dir = normalize_path(search_dir) if search_dir else None
+    source_dir = normalize_path(source_dir) if source_dir else None
     landing_dir = normalize_path(landing_dir) if landing_dir else None
 
     # Filter out already processed files
@@ -1205,10 +1271,10 @@ def add_files(
 
             # Get filename and parent directories
             file_name = path_basename(file_str)
-            if num_search_dir_parents > 0:
+            if num_source_parents > 0:
                 # Extract parent directories from path
                 parts = file_str.replace("s3://", "").split("/")
-                parent_parts = parts[-(num_search_dir_parents + 1) : -1]
+                parent_parts = parts[-(num_source_parents + 1) : -1]
                 parents = "/".join(parent_parts) if parent_parts else ""
             else:
                 parents = ""
@@ -1219,32 +1285,35 @@ def add_files(
             else:
                 landing_path = path_join(landing_dir, file_name)
 
+            # Cache S3 source files first, then copy to landing location
+            if file_is_s3:
+                # Download to persistent cache first
+                cached_file = download_s3_file_with_cache(file_str, fs)
+                source_path = str(cached_file)
+            else:
+                source_path = file_str
+
             # Copy/upload file to landing location
             if landing_is_s3:
-                if file_is_s3:
-                    # S3 to S3 copy
-                    fs.copy(file_str, landing_path)
-                    print(f"Copied {file_str} to {landing_path}")
-                else:
-                    # Upload local file to S3
-                    fs.put(file_str, landing_path)
-                    print(f"Uploaded {file_str} to {landing_path}")
+                # Upload to S3 landing
+                fs.put(source_path, landing_path)
+                print(f"Uploaded to {landing_path}")
             else:
                 # Local landing directory
                 landing_path_dir = path_parent(landing_path)
                 if landing_path_dir:
                     Path(landing_path_dir).mkdir(exist_ok=True, parents=True)
 
-                if file_is_s3:
-                    # Download from S3 to local
-                    fs.get(file_str, landing_path)
-                    print(f"Downloaded {file_str} to {landing_path}")
-                elif landing_dir != search_dir:
-                    # Copy local file
-                    shutil.copy2(file_str, landing_path)
+                if landing_dir != source_dir or file_is_s3:
+                    # Copy to landing (either from cache or local source)
+                    shutil.copy2(source_path, landing_path)
+                    if file_is_s3:
+                        print(f"Copied from cache to {landing_path}")
+                    else:
+                        print(f"Copied {file_str} to {landing_path}")
 
             row = get_file_metadata_row(
-                search_dir=search_dir,
+                source_dir=source_dir,
                 landing_dir=landing_dir,
                 filetype=filetype,
                 file=landing_path,
@@ -1259,7 +1328,7 @@ def add_files(
             print(f"Failed on {file} with {e}")
 
             row = get_file_metadata_row(
-                search_dir=search_dir,
+                source_dir=source_dir,
                 landing_dir=landing_dir,
                 filetype=filetype,
                 file=file,
@@ -1275,7 +1344,7 @@ def add_files(
 
 
 def get_file_metadata_row(
-    search_dir: Optional[str] = None,
+    source_dir: Optional[str] = None,
     landing_dir: Optional[str] = None,
     file: Optional[str] = None,
     filetype: Optional[str] = None,
@@ -1291,15 +1360,14 @@ def get_file_metadata_row(
     import hashlib
     import time
     from datetime import datetime
-    import tempfile
 
     # Normalize paths to strings with trailing slash for consistent LIKE queries
-    search_dir = normalize_path(search_dir) + "/" if search_dir else None
+    source_dir = normalize_path(source_dir) + "/" if source_dir else None
     landing_dir = normalize_path(landing_dir) + "/" if landing_dir else None
     file_str = str(file) if file else None
 
     row = {
-        "search_dir": search_dir,
+        "source_dir": source_dir,
         "landing_dir": landing_dir,
         "full_path": file_str,
         "filesize": None,
@@ -1317,15 +1385,13 @@ def get_file_metadata_row(
 
     start_time = time.time()
 
-    # Check if file is in S3 and download to temp if needed
+    # Check if file is in S3 and download to persistent cache if needed
     file_is_s3 = is_s3_path(file_str) if file_str else False
-    temp_file_path = None
 
     if file_is_s3:
         fs = get_s3_filesystem(filesystem)
-        temp_file_path = Path(tempfile.gettempdir()) / path_basename(file_str)
-        fs.get(file_str, str(temp_file_path))
-        read_file = str(temp_file_path)
+        cached_file = download_s3_file_with_cache(file_str, fs)
+        read_file = str(cached_file)
     else:
         read_file = file_str
 
@@ -1376,11 +1442,6 @@ def get_file_metadata_row(
             f"Row count: {row_count} Filename: {filename} | Runtime: {time.time() - start_time:.2f}"
         )
 
-    finally:
-        # Cleanup temp file if it was created
-        if temp_file_path and temp_file_path.exists():
-            temp_file_path.unlink()
-
     return row
 
 
@@ -1415,22 +1476,22 @@ def add_files_to_metadata_table(
 
     # Normalize paths to strings
     landing_dir = normalize_path(kwargs["landing_dir"])
-    search_dir = normalize_path(kwargs["search_dir"])
+    source_dir = normalize_path(kwargs["source_dir"])
 
     # Handle S3 or local paths for file listing
     filesystem = kwargs.get("filesystem", None)
-    if is_s3_path(search_dir):
+    if is_s3_path(source_dir):
         # S3 path - use s3fs.glob()
         fs = get_s3_filesystem(filesystem)
-        s3_glob_pattern = f"{search_dir}/**/{glob}"
+        s3_glob_pattern = f"{source_dir}/**/{glob}"
         s3_paths = fs.glob(s3_glob_pattern)
         # s3fs returns paths without s3:// prefix, add it back
         file_list = [f"s3://{p}" if not p.startswith("s3://") else p for p in s3_paths]
     else:
         # Local path - use Path.rglob but convert results to strings
-        file_list = [f.as_posix() for f in Path(search_dir).rglob(glob)]
+        file_list = [f.as_posix() for f in Path(source_dir).rglob(glob)]
 
-    kwargs["search_dir"] = search_dir
+    kwargs["source_dir"] = source_dir
     kwargs["landing_dir"] = landing_dir
 
     file_list_filter_fn = kwargs.pop("file_list_filter_fn", None)
@@ -1447,7 +1508,7 @@ def add_files_to_metadata_table(
         if not table_exists(conn, schema, "metadata"):
             create_table_sql = f"""
                 CREATE TABLE {output_table} (
-                    search_dir TEXT,
+                    source_dir TEXT,
                     landing_dir TEXT,
                     full_path TEXT PRIMARY KEY,
                     filesize BIGINT,
@@ -1477,14 +1538,14 @@ def add_files_to_metadata_table(
             SELECT full_path
             FROM {output_table}
             WHERE
-                search_dir LIKE %s AND
+                source_dir LIKE %s AND
                 full_path LIKE %s
                 {"AND metadata_ingest_status = 'Success'" if not retry_failed else ""}
         """
 
         with psycopg.connect(conninfo) as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (search_dir, sql_glob))
+                cur.execute(sql, (source_dir, sql_glob))
                 rows = cur.fetchall()
         kwargs["full_path_list"] = [row[0] for row in rows]
 
@@ -1508,13 +1569,13 @@ def add_files_to_metadata_table(
                     cur.execute(
                         f"""
                         INSERT INTO {output_table}
-                        (search_dir, landing_dir, full_path, filesize, header, row_count,
+                        (source_dir, landing_dir, full_path, filesize, header, row_count,
                          archive_full_path, file_hash, metadata_ingest_datetime, metadata_ingest_status)
                         VALUES
                         (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (full_path)
                         DO UPDATE SET
-                            search_dir = EXCLUDED.search_dir,
+                            source_dir = EXCLUDED.source_dir,
                             landing_dir = EXCLUDED.landing_dir,
                             filesize = EXCLUDED.filesize,
                             header = EXCLUDED.header,
@@ -1525,7 +1586,7 @@ def add_files_to_metadata_table(
                             metadata_ingest_status = EXCLUDED.metadata_ingest_status
                         """,
                         (
-                            row["search_dir"],
+                            row["source_dir"],
                             row["landing_dir"],
                             row["full_path"],
                             row["filesize"],
@@ -1543,21 +1604,21 @@ def add_files_to_metadata_table(
     sql = f"""
         SELECT *
         FROM {output_table}
-        WHERE search_dir LIKE %s AND full_path LIKE %s
+        WHERE source_dir LIKE %s AND full_path LIKE %s
         ORDER BY metadata_ingest_datetime DESC
     """
 
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (search_dir, sql_glob))
+            cur.execute(sql, (source_dir, sql_glob))
             columns = [desc[0] for desc in cur.description]
             rows = cur.fetchall()
             return pd.DataFrame(rows, columns=columns)
 
 
-def drop_search_dir(
+def drop_metadata_by_source(
     conninfo: str,
-    search_dir: str,
+    source_dir: str,
     schema: str,
 ) -> None:
     """
@@ -1566,13 +1627,13 @@ def drop_search_dir(
     Args:
         conninfo: PostgreSQL connection string (e.g. "postgresql://user:pass@host/db")
     """
-    search_dir = Path(search_dir).as_posix()
+    source_dir = Path(source_dir).as_posix()
 
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT COUNT(*) FROM {schema}.metadata WHERE search_dir LIKE %s",
-                (search_dir,),
+                f"SELECT COUNT(*) FROM {schema}.metadata WHERE source_dir LIKE %s",
+                (source_dir,),
             )
             count_before = cur.fetchone()[0]
 
@@ -1580,15 +1641,15 @@ def drop_search_dir(
 
         with conn.cursor() as cur:
             cur.execute(
-                f"DELETE FROM {schema}.metadata WHERE search_dir LIKE %s", (search_dir,)
+                f"DELETE FROM {schema}.metadata WHERE source_dir LIKE %s", (source_dir,)
             )
             print(f"Deleted {cur.rowcount} rows")
         conn.commit()
 
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT COUNT(*) FROM {schema}.metadata WHERE search_dir LIKE %s",
-                (search_dir,),
+                f"SELECT COUNT(*) FROM {schema}.metadata WHERE source_dir LIKE %s",
+                (source_dir,),
             )
             count_after = cur.fetchone()[0]
 

@@ -27,7 +27,7 @@ def _(Path, mo, psycopg):
 
     # Setup paths
     base_dir = Path(__file__).parent.parent  # Go up to project root
-    search_dir = base_dir / "data" / "raw" / "census"
+    source_dir = base_dir / "data" / "raw" / "census"
     landing_dir = base_dir / "data" / "landing" / "census"
 
     # Create directories
@@ -36,7 +36,7 @@ def _(Path, mo, psycopg):
     mo.md(f"""
     # 2020 Decennial Census DHC Data Ingestion
 
-    **Search dir:** `{search_dir}`
+    **Search dir:** `{source_dir}`
     **Landing dir:** `{landing_dir}`
     **Backend:** PostgreSQL (pure psycopg)
     **Compression:** ZIP extraction enabled
@@ -45,7 +45,7 @@ def _(Path, mo, psycopg):
     with conn.cursor() as _cur:
         _cur.execute("CREATE SCHEMA IF NOT EXISTS raw")
     conn.commit()
-    return conn, conninfo, landing_dir, mo, search_dir
+    return conn, conninfo, landing_dir, mo, source_dir
 
 
 @app.cell
@@ -101,13 +101,13 @@ def _():
 
 
 @app.cell
-def _(add_files_to_metadata_table, conninfo, landing_dir, search_dir):
+def _(add_files_to_metadata_table, conninfo, landing_dir, source_dir):
     # Extract DHC files from ZIP and add to metadata
     # DHC files are pipe-delimited (.dhc extension)
     add_files_to_metadata_table(
         conninfo=conninfo,
         schema="raw",
-        search_dir=str(search_dir),
+        source_dir=str(source_dir),
         landing_dir=str(landing_dir),
         filetype="psv",  # Pipe-separated values
         compression_type="zip",

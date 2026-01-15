@@ -69,7 +69,7 @@ with psycopg.connect(conninfo) as conn:
     conn.execute("CREATE SCHEMA IF NOT EXISTS raw")
 
 # Setup paths
-search_dir = Path("data/raw")
+source_dir = Path("data/raw")
 landing_dir = Path("data/landing")
 landing_dir.mkdir(parents=True, exist_ok=True)
 
@@ -86,7 +86,7 @@ column_mapping = {
 add_files_to_metadata_table(
     conninfo=conninfo,
     schema="raw",
-    search_dir=str(search_dir),
+    source_dir=str(source_dir),
     landing_dir=str(landing_dir),
     filetype="csv",
     compression_type="zip",
@@ -135,7 +135,7 @@ conninfo = "host=localhost port=5432 dbname=mydb user=tanner"
 ### Two-Phase Ingestion
 
 **Phase 1: `add_files_to_metadata_table`** - Extract & Catalog
-- Searches for files (or ZIPs) in `search_dir`
+- Searches for files (or ZIPs) in `source_dir`
 - Extracts compressed files to `landing_dir`
 - Records metadata: file path, row count, hash, header
 
@@ -195,7 +195,7 @@ add_files_to_metadata_table(
     compression_type="zip",    # Look for *.zip files
     filetype="csv",           # Files inside are CSV
     archive_glob="*.csv",     # Extract only .csv files
-    search_dir="data/raw",    # Find: *.zip
+    source_dir="data/raw",    # Find: *.zip
     landing_dir="data/landing"
 )
 # Result: Extracts CSV files to data/landing/{zipname}/*.csv
@@ -214,7 +214,7 @@ update_table(
 add_files_to_metadata_table(
     compression_type=None,    # No compression
     filetype="csv",          # Look for *.csv files
-    search_dir="data/raw"
+    source_dir="data/raw"
 )
 ```
 
@@ -304,19 +304,19 @@ update_table(
 
 ### S3 Support
 
-Load files directly from S3 by using `s3://` paths for `search_dir`:
+Load files directly from S3 by using `s3://` paths for `source_dir`:
 
 ```python
 # Local files (existing behavior)
 add_files_to_metadata_table(
-    search_dir="data/raw",
+    source_dir="data/raw",
     landing_dir="data/landing",
     ...
 )
 
 # S3 files (automatically detected)
 add_files_to_metadata_table(
-    search_dir="s3://my-bucket/path/to/data",
+    source_dir="s3://my-bucket/path/to/data",
     landing_dir="data/landing",  # Files downloaded here
     filetype="csv",
     compression_type="zip",  # Also works with ZIPs in S3
@@ -500,7 +500,7 @@ The framework automatically creates a metadata table:
 
 ```sql
 CREATE TABLE {schema}.metadata (
-    search_dir TEXT,
+    source_dir TEXT,
     landing_dir TEXT,
     full_path TEXT PRIMARY KEY,
     filesize BIGINT,

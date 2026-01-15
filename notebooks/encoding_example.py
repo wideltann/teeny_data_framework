@@ -61,30 +61,30 @@ def _(Path, psycopg):
 
     # Setup paths
     base_dir = Path(__file__).parent.parent
-    search_dir = base_dir / "data" / "raw" / "encoding_test"
+    source_dir = base_dir / "data" / "raw" / "encoding_test"
     landing_dir = base_dir / "data" / "landing" / "encoding_test"
 
     # Create directories
-    search_dir.mkdir(parents=True, exist_ok=True)
+    source_dir.mkdir(parents=True, exist_ok=True)
     landing_dir.mkdir(parents=True, exist_ok=True)
-    return conn, conninfo, landing_dir, search_dir
+    return conn, conninfo, landing_dir, source_dir
 
 
 @app.cell
-def _(mo, search_dir):
+def _(mo, source_dir):
     mo.md(f"""
     ## Step 1: Create Sample CP-1252 File
 
     Let's create a test file with special characters in CP-1252 encoding.
     This simulates receiving a file exported from Excel.
 
-    **File location:** `{search_dir}/restaurants.csv`
+    **File location:** `{source_dir}/restaurants.csv`
     """)
     return
 
 
 @app.cell
-def _(search_dir):
+def _(source_dir):
     # Create sample CP-1252 encoded file
     content = """Name,City,Description,Price
     Café Münchën,São Paulo,Delicious café with ñoño,12.50
@@ -92,7 +92,7 @@ def _(search_dir):
     José's Taquería,México,Señor José's specialty,8.99
     """
 
-    file_path = search_dir / "restaurants.csv"
+    file_path = source_dir / "restaurants.csv"
     with open(file_path, 'w', encoding='cp1252') as f:
         f.write(content)
 
@@ -116,12 +116,12 @@ def _(mo):
 
 
 @app.cell
-def _(add_files_to_metadata_table, conninfo, landing_dir, search_dir):
+def _(add_files_to_metadata_table, conninfo, landing_dir, source_dir):
     # Add files to metadata with CP-1252 encoding
     metadata_df = add_files_to_metadata_table(
         conninfo=conninfo,
         schema="test_encoding",
-        search_dir=str(search_dir),
+        source_dir=str(source_dir),
         landing_dir=str(landing_dir),
         filetype="csv",
         has_header=True,
@@ -239,7 +239,7 @@ def _(mo):
     add_files_to_metadata_table(
         conninfo="postgresql://user:pass@host/db",
         schema="raw",
-        search_dir="data/raw/",
+        source_dir="data/raw/",
         landing_dir="data/landing/",
         filetype="csv",
         encoding="cp1252",  # Specify encoding

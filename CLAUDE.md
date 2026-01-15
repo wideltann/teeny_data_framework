@@ -115,7 +115,7 @@ The framework supports non-UTF-8 encodings like CP-1252 (Windows-1252), common i
 add_files_to_metadata_table(
     conninfo="postgresql://user:pass@host/db",
     schema="raw",
-    search_dir="data/raw/",
+    source_dir="data/raw/",
     landing_dir="data/landing/",
     filetype="csv",
     encoding="cp1252",  # Specify encoding
@@ -183,45 +183,51 @@ See `notebooks/encoding_example.py` for a complete demo.
 
 ### 3. S3 Support
 
-Both `search_dir` and `landing_dir` can be prefixed with `s3://` to use S3 buckets:
+Both `source_dir` and `landing_dir` can be prefixed with `s3://` to use S3 buckets:
 
 ```python
-# Example: Read from S3, write to local landing
+# Example: Both S3 (recommended for reproducibility)
 add_files_to_metadata_table(
     conninfo="postgresql://user:pass@host/db",
     schema="raw",
-    search_dir="s3://my-bucket/raw-data/",
-    landing_dir="data/landing/",
-    filetype="csv",
-)
-
-# Example: Read from local, write to S3 landing
-add_files_to_metadata_table(
-    conninfo="postgresql://user:pass@host/db",
-    schema="raw",
-    search_dir="data/raw/",
-    landing_dir="s3://my-bucket/landing/",
-    filetype="csv",
-)
-
-# Example: Both S3
-add_files_to_metadata_table(
-    conninfo="postgresql://user:pass@host/db",
-    schema="raw",
-    search_dir="s3://my-bucket/raw-data/",
-    landing_dir="s3://my-bucket/landing/",
+    source_dir="s3://my-bucket/source/",   # Immutable source data
+    landing_dir="s3://my-bucket/landing/", # Extracted/processed files
     filetype="csv",
 )
 ```
+
+**Terminology:**
+- `source_dir` - Immutable source bucket (never modified by the framework)
+- `landing_dir` - Working area where files are extracted/copied for processing
 
 **Requirements:**
 - Install s3fs: `pip install s3fs`
 - AWS credentials configured (via environment, ~/.aws/credentials, or IAM role)
 
 **How it works:**
-- Files from S3 `search_dir` are downloaded temporarily and uploaded to `landing_dir`
-- Files in S3 `landing_dir` are downloaded temporarily for processing
-- All metadata (paths, file hashes, row counts) are tracked in PostgreSQL
+- S3 files are downloaded to a local `temp/` cache that mirrors the S3 path structure
+- Cache uses size-based validation (re-downloads only if file size changed)
+- Metadata table stores S3 paths, making pipelines portable across machines
+- Each machine maintains its own `temp/` cache
+
+**Cache structure:**
+```
+temp/
+├── my-bucket/
+│   ├── source/
+│   │   └── data.zip          # Cached source file
+│   └── landing/
+│       └── data/
+│           └── file.csv      # Cached extracted file
+```
+
+**Cache management:**
+```bash
+rm -rf temp/              # Clear all cached S3 files
+rm -rf temp/my-bucket/    # Clear specific bucket
+ls -la temp/              # See what's cached
+du -sh temp/              # Check cache size
+```
 
 **Using AWS SSO or named profiles:**
 ```python
@@ -231,11 +237,12 @@ add_files_to_metadata_table(..., filesystem=fs)
 ```
 Or just set `AWS_PROFILE=my-profile` and credentials are used automatically.
 
-### 3. Data Directory Structure
+### 4. Data Directory Structure
 
+**Local:**
 ```
 data/
-├── raw/              # Source files (user places ZIPs/CSVs here)
+├── source/           # Immutable source files (user places ZIPs/CSVs here)
 │   ├── census/       # Census DHC ZIP files
 │   ├── earthquakes/  # Earthquake CSVs
 │   └── iris.zip      # UCI Iris dataset
@@ -244,21 +251,29 @@ data/
     └── iris/         # Extracted .data files
 ```
 
-Or use S3 buckets:
+**S3 (recommended for portability):**
 ```
 s3://my-bucket/
-├── raw-data/         # Source files
+├── source/           # Immutable source files (never modified)
 └── landing/          # Extracted/processed files
 ```
 
-### 4. Running Marimo Notebooks
+**Local cache (auto-managed):**
+```
+temp/                 # S3 file cache (mirrors S3 structure)
+├── my-bucket/
+│   ├── source/...
+│   └── landing/...
+```
+
+### 5. Running Marimo Notebooks
 
 Marimo notebooks can be run as Python scripts:
 ```bash
 python census/dhc_2020.py
 ```
 
-### 5. Marimo Cells - Variable Naming
+### 6. Marimo Cells - Variable Naming
 
 In marimo notebooks, variables must be unique across cells OR prefixed with underscore for private:
 ```python
@@ -273,7 +288,7 @@ def _(conn):
     _cur = conn.cursor()  # private variable
 ```
 
-### 6. SQL in Marimo - Escaping
+### 7. SQL in Marimo - Escaping
 
 When using `mo.sql()`, escape `%` as `%%` in LIKE patterns:
 ```python
@@ -283,7 +298,7 @@ mo.sql("""
 """, engine=conn)
 ```
 
-### 7. DHC Census Files
+### 8. DHC Census Files
 
 DHC files are **pipe-delimited** (`.dhc`) with **no headers**:
 - filetype: `"psv"`
@@ -299,7 +314,7 @@ DHC files are **pipe-delimited** (`.dhc`) with **no headers**:
 add_files_to_metadata_table(
     conninfo="postgresql://user:pass@host/db",
     schema="raw",
-    search_dir=str(search_dir),
+    source_dir=str(source_dir),
     landing_dir=str(landing_dir),
     filetype="csv",  # or "psv" for pipe-delimited
     compression_type="zip",
@@ -360,7 +375,8 @@ Quick reference for `update_table()` optional parameters:
 2. **Don't** use non-prefixed variables across multiple marimo cells
 3. **Don't** forget to escape `%` as `%%` in marimo SQL queries
 4. **Don't** assume DHC columns are numeric - they're text, cast in queries
-5. **Don't** create new data directories - use existing `data/raw/` and `data/landing/`
+5. **Don't** create new data directories - use existing `data/source/` and `data/landing/`
+6. **Don't** add helper functions that wrap simple shell commands - users can just run `rm -rf temp/` or `ls temp/` themselves. Avoid unnecessary abstraction.
 
 ## Notebook Locations
 
