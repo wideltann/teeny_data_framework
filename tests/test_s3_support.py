@@ -13,6 +13,9 @@ import tempfile
 from src.table_functions_postgres import (
     is_s3_path,
     get_s3_filesystem,
+    get_persistent_temp_dir,
+    get_cache_path_from_s3,
+    download_s3_file_with_cache,
 )
 
 
@@ -118,19 +121,11 @@ class TestGetFileMetadataRow:
 
         try:
             with patch("src.table_functions_postgres.is_s3_path") as mock_is_s3:
-                with patch("src.table_functions_postgres.get_s3_filesystem") as mock_get_fs:
+                with patch("src.table_functions_postgres.download_s3_file_with_cache") as mock_download:
                     # Setup mocks
                     mock_is_s3.side_effect = lambda path: str(path).startswith("s3://")
-
-                    mock_fs = MagicMock()
-                    mock_get_fs.return_value = mock_fs
-
-                    def get_side_effect(s3_path, local_path):
-                        # Simulate download by copying temp file
-                        import shutil
-                        shutil.copy(temp_file, local_path)
-
-                    mock_fs.get.side_effect = get_side_effect
+                    # Return the temp file as if it was downloaded/cached
+                    mock_download.return_value = temp_file
 
                     # Call function
                     result = get_file_metadata_row(
@@ -152,8 +147,8 @@ class TestGetFileMetadataRow:
                     assert result["file_hash"] is not None
                     assert result["filesize"] is not None
 
-                    # Verify fs.get was called
-                    assert mock_fs.get.called
+                    # Verify download_s3_file_with_cache was called
+                    mock_download.assert_called_once()
 
         finally:
             temp_file.unlink()
@@ -197,6 +192,183 @@ class TestAddFilesWithS3:
             assert result[0]["metadata_ingest_status"] == "Success"
             # Verify file was copied
             assert (landing_dir / "test.csv").exists()
+
+
+class TestPersistentCaching:
+    """Test persistent S3 caching functions"""
+
+    def test_get_persistent_temp_dir_creates_directory(self):
+        """Test that get_persistent_temp_dir creates temp/ in cwd"""
+        import os
+        import shutil
+
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                os.chdir(tmpdir)
+                result = get_persistent_temp_dir()
+                assert result.exists()
+                assert result.name == "temp"
+                # Use resolve() to handle symlinks (macOS /var -> /private/var)
+                assert result.parent.resolve() == Path(tmpdir).resolve()
+            finally:
+                os.chdir(original_cwd)
+
+    def test_get_persistent_temp_dir_idempotent(self):
+        """Test that calling get_persistent_temp_dir multiple times is safe"""
+        import os
+        import shutil
+
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                os.chdir(tmpdir)
+                result1 = get_persistent_temp_dir()
+                result2 = get_persistent_temp_dir()
+                assert result1 == result2
+                assert result1.exists()
+            finally:
+                os.chdir(original_cwd)
+
+    def test_get_cache_path_from_s3_simple(self):
+        """Test converting S3 path to cache path"""
+        import os
+
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                os.chdir(tmpdir)
+                result = get_cache_path_from_s3("s3://my-bucket/data/file.csv")
+                expected = Path(tmpdir).resolve() / "temp" / "my-bucket" / "data" / "file.csv"
+                assert result.resolve() == expected
+            finally:
+                os.chdir(original_cwd)
+
+    def test_get_cache_path_from_s3_nested(self):
+        """Test converting nested S3 path to cache path"""
+        import os
+
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                os.chdir(tmpdir)
+                result = get_cache_path_from_s3("s3://bucket/a/b/c/d/file.zip")
+                expected = Path(tmpdir).resolve() / "temp" / "bucket" / "a" / "b" / "c" / "d" / "file.zip"
+                assert result.resolve() == expected
+            finally:
+                os.chdir(original_cwd)
+
+    def test_get_cache_path_from_s3_creates_parents(self):
+        """Test that get_cache_path_from_s3 creates parent directories"""
+        import os
+
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                os.chdir(tmpdir)
+                result = get_cache_path_from_s3("s3://bucket/nested/path/file.csv")
+                # Parent directories should be created
+                assert result.parent.exists()
+                expected_parent = Path(tmpdir).resolve() / "temp" / "bucket" / "nested" / "path"
+                assert result.parent.resolve() == expected_parent
+            finally:
+                os.chdir(original_cwd)
+
+    def test_download_s3_file_with_cache_first_download(self):
+        """Test downloading S3 file for the first time (cache miss)"""
+        import os
+
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                os.chdir(tmpdir)
+
+                # Create a mock S3 filesystem
+                mock_fs = MagicMock()
+                mock_fs.info.return_value = {"size": 100}
+
+                def mock_get(s3_path, local_path):
+                    # Simulate download by writing content
+                    Path(local_path).write_text("x" * 100)
+
+                mock_fs.get.side_effect = mock_get
+
+                result = download_s3_file_with_cache("s3://bucket/file.csv", mock_fs)
+
+                # Verify result
+                assert result.exists()
+                assert result.stat().st_size == 100
+                assert "bucket" in str(result)
+
+                # Verify fs.get was called
+                mock_fs.get.assert_called_once()
+
+            finally:
+                os.chdir(original_cwd)
+
+    def test_download_s3_file_with_cache_hit(self):
+        """Test cache hit when file already exists with matching size"""
+        import os
+
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                os.chdir(tmpdir)
+
+                # Create a mock S3 filesystem
+                mock_fs = MagicMock()
+                mock_fs.info.return_value = {"size": 50}
+
+                # Pre-create the cached file with matching size
+                cache_path = get_cache_path_from_s3("s3://bucket/cached.csv")
+                cache_path.write_text("x" * 50)
+
+                result = download_s3_file_with_cache("s3://bucket/cached.csv", mock_fs)
+
+                # Verify result
+                assert result == cache_path
+                assert result.exists()
+
+                # Verify fs.get was NOT called (cache hit)
+                mock_fs.get.assert_not_called()
+
+            finally:
+                os.chdir(original_cwd)
+
+    def test_download_s3_file_with_cache_size_mismatch(self):
+        """Test cache miss when file exists but size differs"""
+        import os
+
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                os.chdir(tmpdir)
+
+                # Create a mock S3 filesystem
+                mock_fs = MagicMock()
+                mock_fs.info.return_value = {"size": 200}  # S3 file is 200 bytes
+
+                # Pre-create the cached file with DIFFERENT size
+                cache_path = get_cache_path_from_s3("s3://bucket/stale.csv")
+                cache_path.write_text("x" * 100)  # Cached is only 100 bytes
+
+                def mock_get(s3_path, local_path):
+                    # Simulate re-download with new size
+                    Path(local_path).write_text("y" * 200)
+
+                mock_fs.get.side_effect = mock_get
+
+                result = download_s3_file_with_cache("s3://bucket/stale.csv", mock_fs)
+
+                # Verify result
+                assert result.exists()
+                assert result.stat().st_size == 200  # Updated to new size
+
+                # Verify fs.get WAS called (cache miss due to size mismatch)
+                mock_fs.get.assert_called_once()
+
+            finally:
+                os.chdir(original_cwd)
 
 
 if __name__ == "__main__":

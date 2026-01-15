@@ -1442,6 +1442,10 @@ def get_file_metadata_row(
             f"Row count: {row_count} Filename: {filename} | Runtime: {time.time() - start_time:.2f}"
         )
 
+    except Exception as e:
+        row["metadata_ingest_status"] = "Failure"
+        row["error_message"] = str(e)
+
     return row
 
 
