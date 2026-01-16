@@ -11,13 +11,17 @@ Use the CLI to automatically infer column types from your data files. This gener
 ### Basic Usage
 
 ```bash
-# Infer schema from any file
+# Infer schema from a single file
 python src/table_functions_postgres.py <file_path> --pretty
+
+# Infer schema from all files in a directory (output keyed by filename)
+python src/table_functions_postgres.py <directory_path> --pretty
 
 # Examples
 python src/table_functions_postgres.py data/raw/my_file.csv --pretty
 python src/table_functions_postgres.py data/raw/my_file.psv --filetype psv --pretty
 python src/table_functions_postgres.py data/raw/my_file.data --no-header --pretty
+python src/table_functions_postgres.py data/raw/earthquakes/ --pretty  # All files in dir
 ```
 
 ### CLI Options
@@ -78,6 +82,27 @@ The CLI outputs JSON in the exact `column_mapping` format with **automatic snake
 - `"user_id"` → `"user_id": [[], "int"]` (already snake_case)
 
 **Type strings:** `int`, `float`, `boolean`, `datetime`, `string`
+
+### Directory Mode
+
+When you provide a directory path, the CLI outputs a JSON object keyed by filename:
+
+```json
+{
+  "file1.csv": {
+    "column_a": [[], "string"],
+    "column_b": [[], "int"]
+  },
+  "file2.csv": {
+    "col_x": [[], "float"],
+    "col_y": [["ColY"], "string"]
+  }
+}
+```
+
+- Processes all files matching the filetype (or all supported types if not specified)
+- Non-recursive (only files directly in the directory)
+- Files that fail to parse will include an `{"error": "..."}` entry
 
 ## Key Patterns to Follow
 

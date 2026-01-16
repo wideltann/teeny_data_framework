@@ -1858,12 +1858,13 @@ Examples:
   python src/table_functions_postgres.py data/raw/my_file.psv --filetype psv
   python src/table_functions_postgres.py data/raw/my_file.xlsx --filetype xlsx --no-header
   python src/table_functions_postgres.py data/raw/my_file.parquet --sample-rows 5000
+  python src/table_functions_postgres.py data/raw/ --pretty  # Infer all files in directory
         """,
     )
 
     parser.add_argument(
-        "file_path",
-        help="Path to the input file",
+        "path",
+        help="Path to the input file or directory",
     )
 
     parser.add_argument(
@@ -1912,28 +1913,74 @@ Examples:
 
     args = parser.parse_args()
 
-    # Validate file exists
-    if not Path(args.file_path).exists():
-        print(f"Error: File not found: {args.file_path}")
+    input_path = Path(args.path)
+
+    # Validate path exists
+    if not input_path.exists():
+        print(f"Error: Path not found: {args.path}")
         exit(1)
 
-    # Infer schema
     try:
-        column_mapping = infer_schema_from_file(
-            file_path=args.file_path,
-            filetype=args.filetype,
-            separator=args.separator,
-            has_header=not args.no_header,
-            encoding=args.encoding,
-            excel_skiprows=args.excel_skiprows,
-            sample_rows=args.sample_rows,
-        )
+        if input_path.is_dir():
+            # Directory mode: infer schema for all files, output keyed by filename
+            # Supported extensions based on filetype arg or all supported types
+            if args.filetype:
+                extensions = [f".{args.filetype}"]
+            else:
+                extensions = [".csv", ".tsv", ".psv", ".xlsx", ".parquet"]
 
-        # Output as JSON
-        if args.pretty:
-            print(json.dumps(column_mapping, indent=2))
+            # Find all matching files in directory (non-recursive)
+            files = sorted([
+                f for f in input_path.iterdir()
+                if f.is_file() and f.suffix.lower() in extensions
+            ])
+
+            if not files:
+                print(f"Error: No matching files found in {args.path}")
+                print(f"Looking for extensions: {extensions}")
+                exit(1)
+
+            # Build output dictionary keyed by filename
+            output = {}
+            for file_path in files:
+                try:
+                    column_mapping = infer_schema_from_file(
+                        file_path=str(file_path),
+                        filetype=args.filetype,
+                        separator=args.separator,
+                        has_header=not args.no_header,
+                        encoding=args.encoding,
+                        excel_skiprows=args.excel_skiprows,
+                        sample_rows=args.sample_rows,
+                    )
+                    output[file_path.name] = column_mapping
+                except Exception as e:
+                    print(f"Warning: Failed to infer schema for {file_path.name}: {e}", file=__import__('sys').stderr)
+                    output[file_path.name] = {"error": str(e)}
+
+            # Output as JSON
+            if args.pretty:
+                print(json.dumps(output, indent=2))
+            else:
+                print(json.dumps(output))
+
         else:
-            print(json.dumps(column_mapping))
+            # Single file mode (original behavior)
+            column_mapping = infer_schema_from_file(
+                file_path=str(input_path),
+                filetype=args.filetype,
+                separator=args.separator,
+                has_header=not args.no_header,
+                encoding=args.encoding,
+                excel_skiprows=args.excel_skiprows,
+                sample_rows=args.sample_rows,
+            )
+
+            # Output as JSON
+            if args.pretty:
+                print(json.dumps(column_mapping, indent=2))
+            else:
+                print(json.dumps(column_mapping))
 
     except Exception as e:
         print(f"Error inferring schema: {e}")

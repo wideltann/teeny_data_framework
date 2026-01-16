@@ -2557,6 +2557,188 @@ class TestCLISchemaInference:
         assert "name" in output
         assert "age" in output
 
+    def test_cli_directory_mode(self, temp_dir):
+        """Test CLI with directory path outputs JSON keyed by filename"""
+        import subprocess
+
+        # Create subdirectory with multiple CSV files
+        sub_dir = temp_dir / "multi_files"
+        sub_dir.mkdir()
+
+        (sub_dir / "file1.csv").write_text("name,age\nAlice,25\nBob,30\n")
+        (sub_dir / "file2.csv").write_text("id,value,score\n1,100,85.5\n2,200,92.0\n")
+
+        result = subprocess.run(
+            ["python", "src/table_functions_postgres.py", str(sub_dir), "--pretty"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+
+        # Check output is keyed by filename
+        assert "file1.csv" in output
+        assert "file2.csv" in output
+
+        # Check schema for each file
+        assert "name" in output["file1.csv"]
+        assert "age" in output["file1.csv"]
+        assert "id" in output["file2.csv"]
+        assert "value" in output["file2.csv"]
+        assert "score" in output["file2.csv"]
+
+    def test_cli_directory_mode_with_filetype_filter(self, temp_dir):
+        """Test CLI directory mode filters by --filetype"""
+        import subprocess
+
+        # Create subdirectory with mixed file types
+        sub_dir = temp_dir / "mixed_files"
+        sub_dir.mkdir()
+
+        (sub_dir / "data.csv").write_text("name,age\nAlice,25\n")
+        (sub_dir / "data.tsv").write_text("id\tvalue\n1\t100\n")
+        (sub_dir / "data.psv").write_text("col1|col2\na|b\n")
+
+        # Filter to only CSV files
+        result = subprocess.run(
+            ["python", "src/table_functions_postgres.py", str(sub_dir),
+             "--filetype", "csv", "--pretty"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+
+        # Only CSV file should be in output
+        assert "data.csv" in output
+        assert "data.tsv" not in output
+        assert "data.psv" not in output
+
+    def test_cli_directory_mode_empty_dir(self, temp_dir):
+        """Test CLI directory mode with empty directory"""
+        import subprocess
+
+        # Create empty subdirectory
+        empty_dir = temp_dir / "empty_dir"
+        empty_dir.mkdir()
+
+        result = subprocess.run(
+            ["python", "src/table_functions_postgres.py", str(empty_dir)],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+        assert result.returncode == 1
+        assert "No matching files" in result.stdout or "Error" in result.stdout
+
+    def test_cli_directory_mode_non_recursive(self, temp_dir):
+        """Test CLI directory mode is non-recursive (doesn't descend into subdirs)"""
+        import subprocess
+
+        # Create nested directory structure
+        parent_dir = temp_dir / "parent"
+        parent_dir.mkdir()
+        child_dir = parent_dir / "child"
+        child_dir.mkdir()
+
+        (parent_dir / "parent_file.csv").write_text("a,b\n1,2\n")
+        (child_dir / "child_file.csv").write_text("x,y\n3,4\n")
+
+        result = subprocess.run(
+            ["python", "src/table_functions_postgres.py", str(parent_dir), "--pretty"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+
+        # Only parent file should be in output
+        assert "parent_file.csv" in output
+        assert "child_file.csv" not in output
+
+    def test_cli_directory_mode_with_parse_error(self, temp_dir):
+        """Test CLI directory mode handles files that fail to parse"""
+        import subprocess
+
+        # Create subdirectory with one good file and one bad file
+        sub_dir = temp_dir / "mixed_quality"
+        sub_dir.mkdir()
+
+        (sub_dir / "good.csv").write_text("name,age\nAlice,25\n")
+        # Create a malformed file (binary content that can't be parsed)
+        (sub_dir / "bad.csv").write_bytes(b"\x00\x01\x02\x03\xff\xfe")
+
+        result = subprocess.run(
+            ["python", "src/table_functions_postgres.py", str(sub_dir), "--pretty"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+
+        # Good file should have proper schema
+        assert "good.csv" in output
+        assert "name" in output["good.csv"]
+
+        # Bad file should have error entry
+        assert "bad.csv" in output
+        assert "error" in output["bad.csv"]
+
+    def test_cli_directory_mode_multiple_filetypes(self, temp_dir):
+        """Test CLI directory mode includes all supported types when no --filetype specified"""
+        import subprocess
+
+        # Create subdirectory with multiple file types
+        sub_dir = temp_dir / "all_types"
+        sub_dir.mkdir()
+
+        (sub_dir / "data.csv").write_text("a,b\n1,2\n")
+        (sub_dir / "data.tsv").write_text("x\ty\n3\t4\n")
+        (sub_dir / "data.psv").write_text("p|q\n5|6\n")
+
+        # Create parquet file
+        test_df = pd.DataFrame({"col1": [1, 2], "col2": ["a", "b"]})
+        test_df.to_parquet(str(sub_dir / "data.parquet"))
+
+        result = subprocess.run(
+            ["python", "src/table_functions_postgres.py", str(sub_dir), "--pretty"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+
+        # All file types should be present
+        assert "data.csv" in output
+        assert "data.tsv" in output
+        assert "data.psv" in output
+        assert "data.parquet" in output
+
+    def test_cli_directory_not_found(self, temp_dir):
+        """Test CLI error handling for non-existent directory"""
+        import subprocess
+
+        result = subprocess.run(
+            ["python", "src/table_functions_postgres.py", "/nonexistent/directory/"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+        assert result.returncode == 1
+        assert "Error" in result.stdout or "not found" in result.stdout.lower()
+
 
 # ===== CONNECTION AND SQL HELPER TESTS =====
 
