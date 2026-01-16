@@ -1355,6 +1355,88 @@ class TestIntegration:
         extracted_files = list(landing_dir.rglob("*.csv"))
         assert len(extracted_files) == 2
 
+    def test_extract_zip_with_nested_directories(self, db_conn, temp_dir):
+        """Test extracting ZIP with nested directory structure extracts correctly"""
+        import zipfile
+
+        landing_dir = temp_dir / "landing"
+        landing_dir.mkdir()
+
+        # Create ZIP with nested structure
+        zip_path = temp_dir / "nested.zip"
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            zf.writestr("subdir/nested/file1.csv", "a,b\n1,2\n")
+            zf.writestr("another/deep/path/file2.csv", "x,y\n3,4\n")
+
+        rows = extract_and_add_zip_files(
+            file_list=[str(zip_path)],
+            full_path_list=[],
+            source_dir=str(temp_dir),
+            landing_dir=str(landing_dir),
+            has_header=True,
+            filetype="csv",
+            resume=False,
+            sample=None,
+            encoding="utf-8",
+            archive_glob="*.csv",
+            num_source_parents=0,
+        )
+
+        assert len(rows) == 2
+
+        # Verify files extracted to flat structure (not preserving ZIP internal paths)
+        # Files should be in landing_dir/zip_stem/filename.csv
+        extracted_files = list(landing_dir.rglob("*.csv"))
+        assert len(extracted_files) == 2
+
+        # Filenames should be just the basename, not the full internal path
+        filenames = {f.name for f in extracted_files}
+        assert filenames == {"file1.csv", "file2.csv"}
+
+    def test_extract_zip_no_temp_file_leakage(self, db_conn, temp_dir):
+        """Test that temp files are cleaned up after extraction"""
+        import zipfile
+        import tempfile
+
+        landing_dir = temp_dir / "landing"
+        landing_dir.mkdir()
+
+        # Create a simple ZIP
+        zip_path = temp_dir / "test.zip"
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            zf.writestr("file.csv", "a,b\n1,2\n")
+
+        # Get system temp dir to check for leakage
+        system_temp = Path(tempfile.gettempdir())
+
+        # Count temp dirs before
+        temp_dirs_before = set(system_temp.iterdir())
+
+        rows = extract_and_add_zip_files(
+            file_list=[str(zip_path)],
+            full_path_list=[],
+            source_dir=str(temp_dir),
+            landing_dir=str(landing_dir),
+            has_header=True,
+            filetype="csv",
+            resume=False,
+            sample=None,
+            encoding="utf-8",
+            archive_glob="*.csv",
+            num_source_parents=0,
+        )
+
+        # Count temp dirs after
+        temp_dirs_after = set(system_temp.iterdir())
+
+        # No new temp directories should remain
+        new_temp_dirs = temp_dirs_after - temp_dirs_before
+        # Filter to only dirs that look like our temp extraction dirs
+        leaked_dirs = [d for d in new_temp_dirs if d.is_dir() and "tmp" in d.name.lower()]
+
+        assert len(rows) == 1
+        assert len(leaked_dirs) == 0, f"Temp directories leaked: {leaked_dirs}"
+
     def test_drop_metadata_by_source(self, conninfo, db_conn, temp_dir):
         """Test dropping files from metadata by source_dir"""
         # Create metadata table

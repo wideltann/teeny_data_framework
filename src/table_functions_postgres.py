@@ -1134,9 +1134,8 @@ def extract_and_add_zip_files(
                     temp_output_path.parent.mkdir(exist_ok=True, parents=True)
                 else:
                     # Local landing directory
-                    raw_output_dir = path_parent(raw_output_path)
-                    Path(raw_output_dir).mkdir(exist_ok=True, parents=True)
                     temp_output_path = Path(raw_output_path)
+                    temp_output_path.parent.mkdir(exist_ok=True, parents=True)
 
                 # Check if already processed
                 if resume and raw_output_path in full_path_set:
@@ -1144,31 +1143,24 @@ def extract_and_add_zip_files(
                     continue
 
                 try:
-                    # Extract to temp location (or final location if local)
-                    if landing_is_s3:
-                        # Extract to temp directory, then move to final location
-                        # zip_ref.extract() preserves internal ZIP structure, so we need a temp dir
-                        temp_extract_dir = get_persistent_temp_dir() / "_zip_extract"
-                        temp_extract_dir.mkdir(exist_ok=True, parents=True)
+                    import tempfile
+                    import shutil
 
-                        # Extract file (preserves internal path from ZIP)
-                        zip_ref.extract(f, str(temp_extract_dir))
-                        extracted_file = temp_extract_dir / f
+                    # Extract to temp directory, then move to final location
+                    # Using extract() + move instead of read() to avoid loading entire file into RAM
+                    # tempfile context manager ensures cleanup even on failure
+                    with tempfile.TemporaryDirectory() as temp_extract_dir:
+                        zip_ref.extract(f, temp_extract_dir)
+                        extracted_file = Path(temp_extract_dir) / f
 
-                        # Move to final location mirroring S3 structure
-                        import shutil
                         shutil.move(str(extracted_file), str(temp_output_path))
-                        print(f"{file_num} Extracted to {temp_output_path}")
 
-                        # Upload to S3
+                    if landing_is_s3:
+                        print(f"{file_num} Extracted to {temp_output_path}")
                         fs.put(str(temp_output_path), raw_output_path)
                         print(f"{file_num} Uploaded to {raw_output_path}")
-
-                        # Cleanup temp extract location
-                        shutil.rmtree(temp_extract_dir, ignore_errors=True)
                     else:
-                        zip_ref.extract(f, raw_output_dir)
-                        print(f"{file_num} Extracted {f} to {raw_output_dir}")
+                        print(f"{file_num} Extracted {f} to {raw_output_path}")
 
                     row = get_file_metadata_row(
                         source_dir=source_dir,
@@ -1202,12 +1194,12 @@ def extract_and_add_zip_files(
                         print(f"Removed bad extracted file: {f}")
 
                     if not landing_is_s3:
-                        raw_output_dir_path = Path(raw_output_dir)
+                        raw_output_dir_path = Path(raw_output_path).parent
                         if raw_output_dir_path.exists() and not any(
                             raw_output_dir_path.iterdir()
                         ):
                             raw_output_dir_path.rmdir()
-                            print(f"Removed empty output dir: {raw_output_dir}")
+                            print(f"Removed empty output dir: {raw_output_dir_path}")
                 finally:
                     # Cleanup temp file if using S3
                     if landing_is_s3 and temp_output_path.exists():
