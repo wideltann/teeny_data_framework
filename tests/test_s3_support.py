@@ -15,6 +15,7 @@ from src.table_functions_postgres import (
     get_s3_filesystem,
     get_persistent_temp_dir,
     get_cache_path_from_s3,
+    get_cache_path_from_source_path,
     download_s3_file_with_cache,
 )
 
@@ -49,15 +50,11 @@ class TestS3HelperFunctions:
 
 
 class TestGetFileMetadataRow:
-    """Test get_file_metadata_row with S3 support"""
+    """Test get_file_metadata_row with new schema"""
 
-    @patch("src.table_functions_postgres.is_s3_path")
-    def test_metadata_from_local_file(self, mock_is_s3):
-        """Test getting metadata from local file (no S3)"""
+    def test_metadata_from_local_file(self):
+        """Test getting metadata from local file"""
         from src.table_functions_postgres import get_file_metadata_row
-
-        # Setup mock
-        mock_is_s3.return_value = False
 
         # Create temp CSV file
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".csv") as f:
@@ -65,13 +62,11 @@ class TestGetFileMetadataRow:
             temp_file = Path(f.name)
 
         try:
-            # Call function
+            # Call function with new schema - source_path is the local path
             result = get_file_metadata_row(
-                source_dir=Path("data/raw"),
-                landing_dir=Path("data/landing"),
-                file=temp_file,
+                source_path=temp_file.as_posix(),
+                source_dir="data/raw/",
                 filetype="csv",
-                archive_full_path=None,
                 has_header=True,
                 error_message=None,
                 encoding="utf-8",
@@ -79,7 +74,7 @@ class TestGetFileMetadataRow:
 
             # Assertions
             assert result["metadata_ingest_status"] == "Success"
-            assert result["full_path"] == temp_file.as_posix()
+            assert result["source_path"] == temp_file.as_posix()
             assert result["header"] == ["col1", "col2"]
             assert result["row_count"] == 2
             assert result["file_hash"] is not None
@@ -93,11 +88,9 @@ class TestGetFileMetadataRow:
         from src.table_functions_postgres import get_file_metadata_row
 
         result = get_file_metadata_row(
-            source_dir=Path("data/raw"),
-            landing_dir=Path("data/landing"),
-            file=Path("nonexistent.csv"),
+            source_path="nonexistent.csv",
+            source_dir="data/raw/",
             filetype="csv",
-            archive_full_path=None,
             has_header=True,
             error_message="Test error",
             encoding="utf-8",
@@ -110,88 +103,39 @@ class TestGetFileMetadataRow:
         assert result["row_count"] is None
         assert result["file_hash"] is None
 
-    def test_metadata_from_s3_csv(self):
-        """Test getting metadata from S3 CSV file"""
-        from src.table_functions_postgres import get_file_metadata_row
-
-        # Create temp file to simulate downloaded S3 file
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".csv") as f:
-            f.write("col1,col2\nval1,val2\n")
-            temp_file = Path(f.name)
-
-        try:
-            with patch("src.table_functions_postgres.is_s3_path") as mock_is_s3:
-                with patch("src.table_functions_postgres.download_s3_file_with_cache") as mock_download:
-                    # Setup mocks
-                    mock_is_s3.side_effect = lambda path: str(path).startswith("s3://")
-                    # Return the temp file as if it was downloaded/cached
-                    mock_download.return_value = temp_file
-
-                    # Call function
-                    result = get_file_metadata_row(
-                        source_dir="s3://my-bucket/raw/",
-                        landing_dir=Path("data/landing"),
-                        file="s3://my-bucket/data/file.csv",
-                        filetype="csv",
-                        archive_full_path=None,
-                        has_header=True,
-                        error_message=None,
-                        encoding="utf-8",
-                    )
-
-                    # Assertions
-                    assert result["metadata_ingest_status"] == "Success"
-                    assert result["full_path"] == "s3://my-bucket/data/file.csv"
-                    assert result["header"] == ["col1", "col2"]
-                    assert result["row_count"] == 1
-                    assert result["file_hash"] is not None
-                    assert result["filesize"] is not None
-
-                    # Verify download_s3_file_with_cache was called
-                    mock_download.assert_called_once()
-
-        finally:
-            temp_file.unlink()
-
 
 class TestAddFilesWithS3:
-    """Test add_files function with S3 support"""
+    """Test add_files function"""
 
-    def test_add_files_local_to_local(self):
-        """Test adding local files to local landing directory (no S3)"""
+    def test_add_files_local(self):
+        """Test adding local files"""
         from src.table_functions_postgres import add_files
-        import shutil
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
-            source_dir = tmpdir / "search"
-            landing_dir = tmpdir / "landing"
+            source_dir = tmpdir / "source"
             source_dir.mkdir()
-            landing_dir.mkdir()
 
             # Create temp file
             test_file = source_dir / "test.csv"
             test_file.write_text("col1,col2\n1,2\n")
 
-            # Call function
+            # Call function - now uses source_path_list, no landing_dir
             result = add_files(
-                source_dir=source_dir,
-                landing_dir=landing_dir,
+                source_dir=str(source_dir) + "/",
                 resume=False,
                 sample=None,
-                file_list=[test_file],
+                file_list=[str(test_file)],
                 filetype="csv",
                 has_header=True,
-                full_path_list=[],
+                source_path_list=[],
                 encoding="utf-8",
-                num_source_parents=0,
             )
 
             # Assertions
             assert len(result) == 1
             assert result[0]["metadata_ingest_status"] == "Success"
-            # Verify file was copied
-            assert (landing_dir / "test.csv").exists()
+            assert result[0]["source_path"] == test_file.as_posix()
 
 
 class TestPersistentCaching:
@@ -367,6 +311,65 @@ class TestPersistentCaching:
                 # Verify fs.get WAS called (cache miss due to size mismatch)
                 mock_fs.get.assert_called_once()
 
+            finally:
+                os.chdir(original_cwd)
+
+
+class TestGetCachePathFromSourcePath:
+    """Test the new get_cache_path_from_source_path function"""
+
+    def test_s3_simple_file(self):
+        """Test S3 file without archive"""
+        import os
+
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                os.chdir(tmpdir)
+                result = get_cache_path_from_source_path("s3://bucket/path/file.csv")
+                expected = Path(tmpdir).resolve() / "temp" / "bucket" / "path" / "file.csv"
+                assert result.resolve() == expected
+            finally:
+                os.chdir(original_cwd)
+
+    def test_s3_archive_with_inner_path(self):
+        """Test S3 archive with :: delimiter"""
+        import os
+
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                os.chdir(tmpdir)
+                result = get_cache_path_from_source_path("s3://bucket/archive.zip::inner/file.csv")
+                expected = Path(tmpdir).resolve() / "temp" / "bucket" / "archive.zip" / "inner" / "file.csv"
+                assert result.resolve() == expected
+            finally:
+                os.chdir(original_cwd)
+
+    def test_local_file_returned_as_is(self):
+        """Test local file path is returned unchanged"""
+        import os
+
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                os.chdir(tmpdir)
+                result = get_cache_path_from_source_path("/local/path/file.csv")
+                assert result == Path("/local/path/file.csv")
+            finally:
+                os.chdir(original_cwd)
+
+    def test_local_archive_with_inner_path(self):
+        """Test local archive with :: delimiter"""
+        import os
+
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                os.chdir(tmpdir)
+                result = get_cache_path_from_source_path("/local/archive.zip::inner/file.csv")
+                expected = Path(tmpdir).resolve() / "temp" / "local" / "archive.zip" / "inner" / "file.csv"
+                assert result.resolve() == expected
             finally:
                 os.chdir(original_cwd)
 

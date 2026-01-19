@@ -140,8 +140,7 @@ The framework supports non-UTF-8 encodings like CP-1252 (Windows-1252), common i
 add_files_to_metadata_table(
     conninfo="postgresql://user:pass@host/db",
     schema="raw",
-    source_dir="data/raw/",
-    landing_dir="data/landing/",
+    source_dir="s3://my-bucket/data/",  # or local path
     filetype="csv",
     encoding="cp1252",  # Specify encoding
 )
@@ -154,7 +153,7 @@ update_table(
     schema="raw",
     output_table="my_table",
     filetype="csv",
-    landing_dir="data/landing/",
+    source_dir="s3://my-bucket/data/",  # matches source_dir in metadata
     column_mapping=column_mapping,
     encoding="cp1252",  # Simply specify encoding!
 )
@@ -180,7 +179,7 @@ update_table(
     schema="raw",
     output_table="my_table",
     filetype="csv",
-    landing_dir="data/landing/",
+    source_dir="s3://my-bucket/data/",
     custom_read_fn=read_cp1252_csv,
 )
 ```
@@ -208,42 +207,41 @@ See `notebooks/encoding_example.py` for a complete demo.
 
 ### 3. S3 Support
 
-Both `source_dir` and `landing_dir` can be prefixed with `s3://` to use S3 buckets:
+Source files can be stored in S3. Files are cached locally in `temp/` for processing.
 
 ```python
-# Example: Both S3 (recommended for reproducibility)
 add_files_to_metadata_table(
     conninfo="postgresql://user:pass@host/db",
     schema="raw",
-    source_dir="s3://my-bucket/source/",   # Immutable source data
-    landing_dir="s3://my-bucket/landing/", # Extracted/processed files
+    source_dir="s3://my-bucket/source/",   # S3 source (immutable)
     filetype="csv",
 )
 ```
 
-**Terminology:**
-- `source_dir` - Immutable source bucket (never modified by the framework)
-- `landing_dir` - Working area where files are extracted/copied for processing
+**Key Architecture:**
+- `source_path` is the PRIMARY KEY in metadata - it uniquely identifies each file
+- For archives: `source_path` uses `::` delimiter: `s3://bucket/archive.zip::inner/file.csv`
+- Cache path is derived from `source_path`, mirroring the S3 structure locally
 
 **Requirements:**
 - Install s3fs: `pip install s3fs`
 - AWS credentials configured (via environment, ~/.aws/credentials, or IAM role)
 
 **How it works:**
-- S3 files are downloaded to a local `temp/` cache that mirrors the S3 path structure
+- S3 files are downloaded to local `temp/` cache that mirrors the S3 path structure
 - Cache uses size-based validation (re-downloads only if file size changed)
+- Archives are extracted to `temp/<archive_path>/<inner_path>`
 - Metadata table stores S3 paths, making pipelines portable across machines
-- Each machine maintains its own `temp/` cache
 
 **Cache structure:**
 ```
 temp/
-├── my-bucket/
-│   ├── source/
-│   │   └── data.zip          # Cached source file
-│   └── landing/
-│       └── data/
-│           └── file.csv      # Cached extracted file
+└── my-bucket/
+    └── source/
+        ├── file.csv                    # Cached non-archive file
+        └── archive.zip/
+            └── inner/
+                └── file.csv            # Extracted archive contents
 ```
 
 **Cache management:**
@@ -260,35 +258,35 @@ import s3fs
 fs = s3fs.S3FileSystem(profile="my-sso-profile")
 add_files_to_metadata_table(..., filesystem=fs)
 ```
-Or just set `AWS_PROFILE=my-profile` and credentials are used automatically.
+Or set `AWS_PROFILE=my-profile` environment variable.
 
 ### 4. Data Directory Structure
 
-**Local:**
+**Source files can be local or S3:**
 ```
+# Local source example
 data/
-├── source/           # Immutable source files (user places ZIPs/CSVs here)
-│   ├── census/       # Census DHC ZIP files
-│   ├── earthquakes/  # Earthquake CSVs
-│   └── iris.zip      # UCI Iris dataset
-└── landing/          # Extracted/processed files (auto-created)
-    ├── census/       # Extracted DHC files
-    └── iris/         # Extracted .data files
-```
+└── source/           # Immutable source files
+    ├── census/       # Census DHC ZIP files
+    ├── earthquakes/  # Earthquake CSVs
+    └── iris.zip      # UCI Iris dataset
 
-**S3 (recommended for portability):**
-```
+# S3 source example
 s3://my-bucket/
-├── source/           # Immutable source files (never modified)
-└── landing/          # Extracted/processed files
+└── source/           # Immutable source files (never modified)
+    ├── census/
+    └── earthquakes/
 ```
 
-**Local cache (auto-managed):**
+**Local cache (auto-managed, mirrors source structure):**
 ```
-temp/                 # S3 file cache (mirrors S3 structure)
-├── my-bucket/
-│   ├── source/...
-│   └── landing/...
+temp/                 # S3 file cache
+└── my-bucket/
+    └── source/
+        ├── file.csv                    # Downloaded S3 files
+        └── archive.zip/
+            └── extracted/
+                └── file.csv            # Extracted contents
 ```
 
 ### 5. Running Marimo Notebooks
@@ -335,12 +333,11 @@ DHC files are **pipe-delimited** (`.dhc`) with **no headers**:
 ### ZIP Extraction + Ingestion
 
 ```python
-# Step 1: Extract from ZIP
+# Step 1: Extract from ZIP and add to metadata
 add_files_to_metadata_table(
     conninfo="postgresql://user:pass@host/db",
     schema="raw",
-    source_dir=str(source_dir),
-    landing_dir=str(landing_dir),
+    source_dir="s3://my-bucket/data/",  # or local path
     filetype="csv",  # or "psv" for pipe-delimited
     compression_type="zip",
     archive_glob="*.csv",
@@ -349,7 +346,7 @@ add_files_to_metadata_table(
     resume=False,
 )
 
-# Step 2: Ingest extracted files
+# Step 2: Ingest files into target table
 update_table(
     conninfo="postgresql://user:pass@host/db",
     schema="raw",
@@ -358,8 +355,9 @@ update_table(
     sql_glob="%.csv",
     column_mapping=column_mapping,
     header_fn=my_header_fn,  # Use pattern from section 1
-    landing_dir=str(landing_dir),
+    source_dir="s3://my-bucket/data/",  # matches source_dir from step 1
     resume=False,
+    cleanup=True,  # Optional: delete cached files after successful ingestion
 )
 ```
 
@@ -381,6 +379,7 @@ Quick reference for `update_table()` optional parameters:
 | `null_value` | `str` | Custom null representation |
 | `resume` | `bool` | Skip already-processed files |
 | `retry_failed` | `bool` | Re-process failed files |
+| `cleanup` | `bool` | Delete cached files after successful ingestion |
 
 ## File Type Reference
 
@@ -400,7 +399,7 @@ Quick reference for `update_table()` optional parameters:
 2. **Don't** use non-prefixed variables across multiple marimo cells
 3. **Don't** forget to escape `%` as `%%` in marimo SQL queries
 4. **Don't** assume DHC columns are numeric - they're text, cast in queries
-5. **Don't** create new data directories - use existing `data/source/` and `data/landing/`
+5. **Don't** create new data directories - use existing `data/source/` structure
 6. **Don't** add helper functions that wrap simple shell commands - users can just run `rm -rf temp/` or `ls temp/` themselves. Avoid unnecessary abstraction.
 
 ## Notebook Locations
@@ -414,7 +413,12 @@ All notebooks are in `notebooks/` directory. **One notebook per dataset.**
 
 ### Running the Test Suite
 
-The project has comprehensive tests using pytest and testcontainers (requires Docker):
+The project has comprehensive tests using pytest and testcontainers (requires Docker/Podman):
+
+**Start Podman (if using Podman instead of Docker):**
+```bash
+podman machine start
+```
 
 ```bash
 # Run all tests

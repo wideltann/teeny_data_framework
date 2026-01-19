@@ -913,15 +913,14 @@ class TestMetadataFunctions:
     def test_get_file_metadata_row_csv(self, sample_csv_file, temp_dir):
         """Test generating metadata row for CSV file"""
         row = get_file_metadata_row(
-            source_dir=temp_dir,
-            landing_dir=temp_dir,
-            file=sample_csv_file,
+            source_path=sample_csv_file.as_posix(),
+            source_dir=str(temp_dir) + "/",
             filetype="csv",
             has_header=True,
             encoding="utf-8-sig",
         )
 
-        assert row["full_path"] == sample_csv_file.as_posix()
+        assert row["source_path"] == sample_csv_file.as_posix()
         assert row["metadata_ingest_status"] == "Success"
         assert row["header"] == ["name", "age", "score"]
         assert row["row_count"] == 3
@@ -931,9 +930,8 @@ class TestMetadataFunctions:
     def test_get_file_metadata_row_with_error(self, temp_dir):
         """Test metadata row generation with error"""
         row = get_file_metadata_row(
-            source_dir=temp_dir,
-            landing_dir=temp_dir,
-            file=None,
+            source_path="nonexistent.csv",
+            source_dir=str(temp_dir) + "/",
             filetype="csv",
             has_header=True,
             error_message="Test error",
@@ -947,12 +945,12 @@ class TestMetadataFunctions:
         # Create metadata table and insert row
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                full_path TEXT PRIMARY KEY,
+                source_path TEXT PRIMARY KEY,
                 row_count BIGINT
             )
         """)
         execute_sql(db_conn,
-            "INSERT INTO test_schema.metadata (full_path, row_count) VALUES ($1, $2)",
+            "INSERT INTO test_schema.metadata (source_path, row_count) VALUES ($1, $2)",
             (str(sample_csv_file), 3)
         )
 
@@ -964,7 +962,7 @@ class TestMetadataFunctions:
             conn=db_conn,
             schema="test_schema",
             df=df,
-            full_path=str(sample_csv_file),
+            source_path=str(sample_csv_file),
         )
 
     def test_row_count_check_failure(self, db_conn, sample_csv_file):
@@ -972,12 +970,12 @@ class TestMetadataFunctions:
         # Create metadata table and insert row
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                full_path TEXT PRIMARY KEY,
+                source_path TEXT PRIMARY KEY,
                 row_count BIGINT
             )
         """)
         execute_sql(db_conn,
-            "INSERT INTO test_schema.metadata (full_path, row_count) VALUES ($1, $2)",
+            "INSERT INTO test_schema.metadata (source_path, row_count) VALUES ($1, $2)",
             (str(sample_csv_file), 5)  # Wrong count
         )
 
@@ -989,7 +987,7 @@ class TestMetadataFunctions:
                 conn=db_conn,
                 schema="test_schema",
                 df=df,
-                full_path=str(sample_csv_file),
+                source_path=str(sample_csv_file),
             )
 
     def test_update_metadata_success(self, db_conn, sample_csv_file):
@@ -997,7 +995,7 @@ class TestMetadataFunctions:
         # Create metadata table
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                full_path TEXT PRIMARY KEY,
+                source_path TEXT PRIMARY KEY,
                 ingest_datetime TIMESTAMP,
                 status TEXT,
                 error_message TEXT,
@@ -1006,20 +1004,20 @@ class TestMetadataFunctions:
             )
         """)
         execute_sql(db_conn,
-            "INSERT INTO test_schema.metadata (full_path) VALUES ($1)",
+            "INSERT INTO test_schema.metadata (source_path) VALUES ($1)",
             (str(sample_csv_file),)
         )
 
         update_metadata(
             conn=db_conn,
-            full_path=str(sample_csv_file),
+            source_path=str(sample_csv_file),
             schema="test_schema",
             ingest_runtime=5,
         )
 
         # Verify update
         result = execute_sql_fetchone(db_conn,
-            "SELECT status, ingest_runtime FROM test_schema.metadata WHERE full_path = $1",
+            "SELECT status, ingest_runtime FROM test_schema.metadata WHERE source_path = $1",
             (str(sample_csv_file),)
         )
 
@@ -1031,7 +1029,7 @@ class TestMetadataFunctions:
         # Create metadata table
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                full_path TEXT PRIMARY KEY,
+                source_path TEXT PRIMARY KEY,
                 ingest_datetime TIMESTAMP,
                 status TEXT,
                 error_message TEXT,
@@ -1040,20 +1038,20 @@ class TestMetadataFunctions:
             )
         """)
         execute_sql(db_conn,
-            "INSERT INTO test_schema.metadata (full_path) VALUES ($1)",
+            "INSERT INTO test_schema.metadata (source_path) VALUES ($1)",
             (str(sample_csv_file),)
         )
 
         update_metadata(
             conn=db_conn,
-            full_path=str(sample_csv_file),
+            source_path=str(sample_csv_file),
             schema="test_schema",
             error_message="Test error occurred",
         )
 
         # Verify update
         result = execute_sql_fetchone(db_conn,
-            "SELECT status, error_message FROM test_schema.metadata WHERE full_path = $1",
+            "SELECT status, error_message FROM test_schema.metadata WHERE source_path = $1",
             (str(sample_csv_file),)
         )
 
@@ -1311,18 +1309,16 @@ class TestIntegration:
         shutil.copy(sample_csv_file, dest_file)
 
         # Test the add_files function (sub-function of add_files_to_metadata_table)
-        file_list = [dest_file]
+        file_list = [str(dest_file)]
         rows = add_files(
-            source_dir=source_dir,
-            landing_dir=landing_dir,
+            source_dir=str(source_dir) + "/",
             resume=False,
             sample=None,
             file_list=file_list,
             filetype="csv",
             has_header=True,
-            full_path_list=[],
+            source_path_list=[],
             encoding="utf-8",
-            num_source_parents=0,
         )
 
         assert len(rows) == 1
@@ -1330,112 +1326,113 @@ class TestIntegration:
 
     def test_extract_and_add_zip_files(self, db_conn, temp_dir, sample_zip_file):
         """Test extracting ZIP files and adding to metadata"""
-        landing_dir = temp_dir / "landing"
-        landing_dir.mkdir()
+        import os
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+            file_list = [str(sample_zip_file)]
 
-        file_list = [sample_zip_file]
+            rows = extract_and_add_zip_files(
+                file_list=file_list,
+                source_path_list=[],
+                source_dir=str(temp_dir) + "/",
+                has_header=True,
+                filetype="csv",
+                resume=False,
+                sample=None,
+                encoding="utf-8",
+                archive_glob="*.csv",
+            )
 
-        rows = extract_and_add_zip_files(
-            file_list=file_list,
-            full_path_list=[],
-            source_dir=temp_dir,
-            landing_dir=landing_dir,
-            has_header=True,
-            filetype="csv",
-            resume=False,
-            sample=None,
-            encoding="utf-8",
-            archive_glob="*.csv",
-            num_source_parents=0,
-        )
+            assert len(rows) == 2  # Two CSV files in the ZIP
 
-        assert len(rows) == 2  # Two CSV files in the ZIP
-
-        # Verify extracted files exist
-        extracted_files = list(landing_dir.rglob("*.csv"))
-        assert len(extracted_files) == 2
+            # Verify source_path has :: delimiter for archives
+            for row in rows:
+                assert "::" in row["source_path"]
+        finally:
+            os.chdir(original_cwd)
 
     def test_extract_zip_with_nested_directories(self, db_conn, temp_dir):
         """Test extracting ZIP with nested directory structure extracts correctly"""
         import zipfile
+        import os
 
-        landing_dir = temp_dir / "landing"
-        landing_dir.mkdir()
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
 
-        # Create ZIP with nested structure
-        zip_path = temp_dir / "nested.zip"
-        with zipfile.ZipFile(zip_path, 'w') as zf:
-            zf.writestr("subdir/nested/file1.csv", "a,b\n1,2\n")
-            zf.writestr("another/deep/path/file2.csv", "x,y\n3,4\n")
+            # Create ZIP with nested structure
+            zip_path = temp_dir / "nested.zip"
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr("subdir/nested/file1.csv", "a,b\n1,2\n")
+                zf.writestr("another/deep/path/file2.csv", "x,y\n3,4\n")
 
-        rows = extract_and_add_zip_files(
-            file_list=[str(zip_path)],
-            full_path_list=[],
-            source_dir=str(temp_dir),
-            landing_dir=str(landing_dir),
-            has_header=True,
-            filetype="csv",
-            resume=False,
-            sample=None,
-            encoding="utf-8",
-            archive_glob="*.csv",
-            num_source_parents=0,
-        )
+            rows = extract_and_add_zip_files(
+                file_list=[str(zip_path)],
+                source_path_list=[],
+                source_dir=str(temp_dir) + "/",
+                has_header=True,
+                filetype="csv",
+                resume=False,
+                sample=None,
+                encoding="utf-8",
+                archive_glob="*.csv",
+            )
 
-        assert len(rows) == 2
+            assert len(rows) == 2
 
-        # Verify files extracted to flat structure (not preserving ZIP internal paths)
-        # Files should be in landing_dir/zip_stem/filename.csv
-        extracted_files = list(landing_dir.rglob("*.csv"))
-        assert len(extracted_files) == 2
-
-        # Filenames should be just the basename, not the full internal path
-        filenames = {f.name for f in extracted_files}
-        assert filenames == {"file1.csv", "file2.csv"}
+            # Verify source_path includes the inner path with :: delimiter
+            source_paths = [row["source_path"] for row in rows]
+            assert any("subdir/nested/file1.csv" in p for p in source_paths)
+            assert any("another/deep/path/file2.csv" in p for p in source_paths)
+        finally:
+            os.chdir(original_cwd)
 
     def test_extract_zip_no_temp_file_leakage(self, db_conn, temp_dir):
         """Test that temp files are cleaned up after extraction"""
         import zipfile
         import tempfile
+        import os
 
-        landing_dir = temp_dir / "landing"
-        landing_dir.mkdir()
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
 
-        # Create a simple ZIP
-        zip_path = temp_dir / "test.zip"
-        with zipfile.ZipFile(zip_path, 'w') as zf:
-            zf.writestr("file.csv", "a,b\n1,2\n")
+            # Create a simple ZIP
+            zip_path = temp_dir / "test.zip"
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr("file.csv", "a,b\n1,2\n")
 
-        # Get system temp dir to check for leakage
-        system_temp = Path(tempfile.gettempdir())
+            # Get system temp dir to check for leakage
+            system_temp = Path(tempfile.gettempdir())
 
-        # Count temp dirs before
-        temp_dirs_before = set(system_temp.iterdir())
+            # Count temp dirs before
+            temp_dirs_before = set(system_temp.iterdir())
 
-        rows = extract_and_add_zip_files(
-            file_list=[str(zip_path)],
-            full_path_list=[],
-            source_dir=str(temp_dir),
-            landing_dir=str(landing_dir),
-            has_header=True,
-            filetype="csv",
-            resume=False,
-            sample=None,
-            encoding="utf-8",
-            archive_glob="*.csv",
-            num_source_parents=0,
-        )
+            rows = extract_and_add_zip_files(
+                file_list=[str(zip_path)],
+                source_path_list=[],
+                source_dir=str(temp_dir) + "/",
+                has_header=True,
+                filetype="csv",
+                resume=False,
+                sample=None,
+                encoding="utf-8",
+                archive_glob="*.csv",
+            )
 
-        # Count temp dirs after
-        temp_dirs_after = set(system_temp.iterdir())
+            # Count temp dirs after
+            temp_dirs_after = set(system_temp.iterdir())
 
-        # No new temp directories should remain
-        new_temp_dirs = temp_dirs_after - temp_dirs_before
-        # Filter to only dirs that look like our temp extraction dirs
-        leaked_dirs = [d for d in new_temp_dirs if d.is_dir() and "tmp" in d.name.lower()]
+            # No new temp directories should remain
+            new_temp_dirs = temp_dirs_after - temp_dirs_before
+            # Filter to only dirs that look like our temp extraction dirs
+            leaked_dirs = [d for d in new_temp_dirs if d.is_dir() and "tmp" in d.name.lower()]
 
-        assert len(rows) == 1
-        assert len(leaked_dirs) == 0, f"Temp directories leaked: {leaked_dirs}"
+            assert len(rows) == 1
+            assert len(leaked_dirs) == 0, f"Temp directories leaked: {leaked_dirs}"
+        finally:
+            os.chdir(original_cwd)
 
     def test_drop_metadata_by_source(self, conninfo, db_conn, temp_dir):
         """Test dropping files from metadata by source_dir"""
@@ -1443,7 +1440,7 @@ class TestIntegration:
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 source_dir TEXT,
-                full_path TEXT PRIMARY KEY
+                source_path TEXT PRIMARY KEY
             )
         """)
         execute_sql(db_conn,
@@ -1470,7 +1467,7 @@ class TestIntegration:
         # Create test table
         execute_sql(db_conn, """
             CREATE TABLE test_schema.partition_test (
-                full_path TEXT,
+                source_path TEXT,
                 data TEXT
             )
         """)
@@ -1546,7 +1543,7 @@ class TestEdgeCases:
         # Create metadata table with all required columns
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                full_path TEXT PRIMARY KEY,
+                source_path TEXT PRIMARY KEY,
                 ingest_datetime TIMESTAMP,
                 status TEXT,
                 error_message TEXT,
@@ -1555,7 +1552,7 @@ class TestEdgeCases:
             )
         """)
         execute_sql(db_conn,
-            "INSERT INTO test_schema.metadata (full_path) VALUES ($1)",
+            "INSERT INTO test_schema.metadata (source_path) VALUES ($1)",
             ("/path/to/file.csv",)
         )
 
@@ -1564,14 +1561,14 @@ class TestEdgeCases:
 
         update_metadata(
             conn=db_conn,
-            full_path="/path/to/file.csv",
+            source_path="/path/to/file.csv",
             schema="test_schema",
             error_message=long_error,
         )
 
         # Verify truncation
         result = execute_sql_fetchone(db_conn,
-            "SELECT error_message FROM test_schema.metadata WHERE full_path = $1",
+            "SELECT error_message FROM test_schema.metadata WHERE source_path = $1",
             ("/path/to/file.csv",)
         )
         error = result[0]
@@ -1729,13 +1726,11 @@ class TestMissingFunctions:
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 source_dir TEXT,
-                landing_dir TEXT,
-                full_path TEXT PRIMARY KEY,
+                source_path TEXT PRIMARY KEY,
                 filesize BIGINT,
                 header TEXT[],
                 row_count BIGINT,
-                archive_full_path TEXT,
-                file_hash TEXT,
+                                file_hash TEXT,
                 metadata_ingest_datetime TIMESTAMP,
                 metadata_ingest_status TEXT,
                 ingest_datetime TIMESTAMP,
@@ -1750,7 +1745,7 @@ class TestMissingFunctions:
         # Note: landing_dir must have trailing slash to match update_table queries
         execute_sql(db_conn, """
             INSERT INTO test_schema.metadata
-            (full_path, row_count, metadata_ingest_status, landing_dir)
+            (source_path, row_count, metadata_ingest_status, source_dir)
             VALUES ($1, $2, $3, $4)
         """, (str(sample_csv_file), 3, "Success", str(temp_dir) + "/"))
 
@@ -1767,7 +1762,7 @@ class TestMissingFunctions:
             output_table="test_output",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             resume=False,
         )
 
@@ -1804,13 +1799,11 @@ class TestMissingFunctions:
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 source_dir TEXT,
-                landing_dir TEXT,
-                full_path TEXT PRIMARY KEY,
+                source_path TEXT PRIMARY KEY,
                 filesize BIGINT,
                 header TEXT[],
                 row_count BIGINT,
-                archive_full_path TEXT,
-                file_hash TEXT,
+                                file_hash TEXT,
                 metadata_ingest_datetime TIMESTAMP,
                 metadata_ingest_status TEXT,
                 ingest_datetime TIMESTAMP,
@@ -1832,7 +1825,7 @@ class TestAdditionalFunctions:
         # Create metadata table
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                full_path TEXT PRIMARY KEY
+                source_path TEXT PRIMARY KEY
             )
         """)
         execute_sql(db_conn,
@@ -1843,7 +1836,7 @@ class TestAdditionalFunctions:
         # Create data table
         execute_sql(db_conn, """
             CREATE TABLE test_schema.data_table (
-                full_path TEXT,
+                source_path TEXT,
                 data TEXT
             )
         """)
@@ -1856,7 +1849,7 @@ class TestAdditionalFunctions:
         drop_file_from_metadata_and_table(
             conninfo=conninfo,
             table="data_table",
-            full_path="/path/to/file.csv",
+            source_path="/path/to/file.csv",
             schema="test_schema",
         )
 
@@ -1884,12 +1877,12 @@ class TestAdditionalFunctions:
         # Create metadata table
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                full_path TEXT PRIMARY KEY,
+                source_path TEXT PRIMARY KEY,
                 row_count BIGINT
             )
         """)
         execute_sql(db_conn,
-            "INSERT INTO test_schema.metadata (full_path, row_count) VALUES ($1, $2)",
+            "INSERT INTO test_schema.metadata (source_path, row_count) VALUES ($1, $2)",
             (str(sample_csv_file), 3)
         )
 
@@ -1901,7 +1894,7 @@ class TestAdditionalFunctions:
             conn=db_conn,
             schema="test_schema",
             df=df,
-            full_path=str(sample_csv_file),
+            source_path=str(sample_csv_file),
             unpivot_row_multiplier=3,
         )
 
@@ -1910,7 +1903,7 @@ class TestAdditionalFunctions:
         # Create metadata table
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
-                full_path TEXT PRIMARY KEY,
+                source_path TEXT PRIMARY KEY,
                 ingest_datetime TIMESTAMP,
                 status TEXT,
                 error_message TEXT,
@@ -1919,13 +1912,13 @@ class TestAdditionalFunctions:
             )
         """)
         execute_sql(db_conn,
-            "INSERT INTO test_schema.metadata (full_path) VALUES ($1)",
+            "INSERT INTO test_schema.metadata (source_path) VALUES ($1)",
             ("/path/to/file.csv",)
         )
 
         update_metadata(
             conn=db_conn,
-            full_path="/path/to/file.csv",
+            source_path="/path/to/file.csv",
             schema="test_schema",
             unpivot_row_multiplier=5,
             ingest_runtime=10,
@@ -1933,7 +1926,7 @@ class TestAdditionalFunctions:
 
         # Verify update
         result = execute_sql_fetchone(db_conn,
-            "SELECT unpivot_row_multiplier, ingest_runtime FROM test_schema.metadata WHERE full_path = $1",
+            "SELECT unpivot_row_multiplier, ingest_runtime FROM test_schema.metadata WHERE source_path = $1",
             ("/path/to/file.csv",)
         )
 
@@ -1953,13 +1946,11 @@ class TestUpdateTableAdvancedFeatures:
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 source_dir TEXT,
-                landing_dir TEXT,
-                full_path TEXT PRIMARY KEY,
+                source_path TEXT PRIMARY KEY,
                 filesize BIGINT,
                 header TEXT[],
                 row_count BIGINT,
-                archive_full_path TEXT,
-                file_hash TEXT,
+                                file_hash TEXT,
                 metadata_ingest_datetime TIMESTAMP,
                 metadata_ingest_status TEXT,
                 ingest_datetime TIMESTAMP,
@@ -1973,7 +1964,7 @@ class TestUpdateTableAdvancedFeatures:
         for csv_file, row_count in csv_files:
             execute_sql(db_conn, """
                 INSERT INTO test_schema.metadata
-                (full_path, row_count, metadata_ingest_status, landing_dir)
+                (source_path, row_count, metadata_ingest_status, source_dir)
                 VALUES ($1, $2, $3, $4)
             """, (str(csv_file), row_count, "Success", str(temp_dir) + "/"))
 
@@ -2002,7 +1993,7 @@ class TestUpdateTableAdvancedFeatures:
             output_table="transform_output",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             transform_fn=transform_fn,
             resume=False,
         )
@@ -2036,7 +2027,7 @@ class TestUpdateTableAdvancedFeatures:
             output_table="additional_cols_output",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             additional_cols_fn=additional_cols_fn,
             resume=False,
         )
@@ -2068,7 +2059,7 @@ class TestUpdateTableAdvancedFeatures:
             output_table_naming_fn=output_table_naming_fn,
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             resume=False,
         )
 
@@ -2100,7 +2091,7 @@ class TestUpdateTableAdvancedFeatures:
             output_table="filter_output",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             file_list_filter_fn=file_list_filter_fn,
             resume=False,
         )
@@ -2128,7 +2119,7 @@ class TestUpdateTableAdvancedFeatures:
             output_table="custom_read_output",
             filetype="csv",
             custom_read_fn=custom_read_fn,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             resume=False,
         )
 
@@ -2156,7 +2147,7 @@ class TestUpdateTableAdvancedFeatures:
             output_table="mapping_fn_output",
             filetype="csv",
             column_mapping_fn=column_mapping_fn,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             resume=False,
         )
 
@@ -2191,7 +2182,7 @@ class TestUpdateTableAdvancedFeatures:
             output_table="pivot_output",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             pivot_mapping=pivot_mapping,
             resume=False,
         )
@@ -2221,13 +2212,13 @@ class TestUpdateTableAdvancedFeatures:
             output_table="sample_output",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             sample=2,  # Only process 2 files
             resume=False,
         )
 
         # Verify only 2 files were processed
-        result = execute_sql_fetchone(db_conn, "SELECT COUNT(DISTINCT full_path) FROM test_schema.sample_output")
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(DISTINCT source_path) FROM test_schema.sample_output")
         assert result[0] == 2
 
     def test_update_table_resume(self, conninfo, db_conn, temp_dir):
@@ -2242,13 +2233,11 @@ class TestUpdateTableAdvancedFeatures:
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 source_dir TEXT,
-                landing_dir TEXT,
-                full_path TEXT PRIMARY KEY,
+                source_path TEXT PRIMARY KEY,
                 filesize BIGINT,
                 header TEXT[],
                 row_count BIGINT,
-                archive_full_path TEXT,
-                file_hash TEXT,
+                                file_hash TEXT,
                 metadata_ingest_datetime TIMESTAMP,
                 metadata_ingest_status TEXT,
                 ingest_datetime TIMESTAMP,
@@ -2262,14 +2251,14 @@ class TestUpdateTableAdvancedFeatures:
         # File 1 is already processed
         execute_sql(db_conn, """
             INSERT INTO test_schema.metadata
-            (full_path, row_count, metadata_ingest_status, landing_dir, ingest_datetime, status)
+            (source_path, row_count, metadata_ingest_status, source_dir, ingest_datetime, status)
             VALUES ($1, $2, $3, $4, NOW(), 'Success')
         """, (str(csv1), 1, "Success", str(temp_dir) + "/"))
 
         # File 2 is not processed yet
         execute_sql(db_conn, """
             INSERT INTO test_schema.metadata
-            (full_path, row_count, metadata_ingest_status, landing_dir)
+            (source_path, row_count, metadata_ingest_status, source_dir)
             VALUES ($1, $2, $3, $4)
         """, (str(csv2), 1, "Success", str(temp_dir) + "/"))
 
@@ -2284,7 +2273,7 @@ class TestUpdateTableAdvancedFeatures:
             output_table="resume_output",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             resume=True,  # Only process unprocessed files
         )
 
@@ -2315,7 +2304,7 @@ class TestUpdateTableAdvancedFeatures:
             output_table="header_fn_output",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             header_fn=header_fn,
             resume=False,
         )
@@ -2338,11 +2327,9 @@ class TestAddFilesToMetadataTableEndToEnd:
         # Clean up any existing metadata table from previous tests
         execute_sql(db_conn, "DROP TABLE IF EXISTS test_schema.metadata")
 
-        # Create search and landing directories
-        source_dir = temp_dir / "search"
-        landing_dir = temp_dir / "landing"
+        # Create source directory
+        source_dir = temp_dir / "source"
         source_dir.mkdir()
-        landing_dir.mkdir()
 
         # Create test CSV files
         csv1 = source_dir / "file1.csv"
@@ -2354,8 +2341,7 @@ class TestAddFilesToMetadataTableEndToEnd:
         result_df = add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            source_dir=str(source_dir),
-            landing_dir=str(landing_dir),
+            source_dir=str(source_dir) + "/",
             filetype="csv",
             has_header=True,
             encoding="utf-8",
@@ -2368,47 +2354,51 @@ class TestAddFilesToMetadataTableEndToEnd:
         result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.metadata")
         assert result[0] == 2
 
-        # Verify files were copied to landing directory
-        assert (landing_dir / "file1.csv").exists()
-        assert (landing_dir / "file2.csv").exists()
+        # Verify source_path is stored correctly in metadata
+        paths = execute_sql_fetchone(db_conn, "SELECT array_agg(source_path) FROM test_schema.metadata")
+        assert str(csv1) in paths[0] or csv1.as_posix() in paths[0]
 
     def test_add_files_to_metadata_table_with_zip(self, conninfo, db_conn, temp_dir):
         """Test add_files_to_metadata_table with ZIP extraction"""
         import shutil
+        import os
 
-        # Create search and landing directories
-        source_dir = temp_dir / "search"
-        landing_dir = temp_dir / "landing"
-        source_dir.mkdir()
-        landing_dir.mkdir()
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
 
-        # Create a ZIP file with CSV files
-        zip_path = source_dir / "archive.zip"
-        with zipfile.ZipFile(zip_path, 'w') as zf:
-            zf.writestr("inner1.csv", "col1,col2\n1,2\n")
-            zf.writestr("inner2.csv", "col1,col2\n3,4\n")
+            # Create source directory
+            source_dir = temp_dir / "source"
+            source_dir.mkdir()
 
-        # Call add_files_to_metadata_table with compression
-        result_df = add_files_to_metadata_table(
-            conninfo=conninfo,
-            schema="test_schema",
-            source_dir=str(source_dir),
-            landing_dir=str(landing_dir),
-            filetype="csv",
-            compression_type="zip",
-            archive_glob="*.csv",
-            has_header=True,
-            encoding="utf-8",
-            resume=False,
-        )
+            # Create a ZIP file with CSV files
+            zip_path = source_dir / "archive.zip"
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr("inner1.csv", "col1,col2\n1,2\n")
+                zf.writestr("inner2.csv", "col1,col2\n3,4\n")
 
-        # Verify metadata table was populated
-        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.metadata")
-        assert result[0] == 2
+            # Call add_files_to_metadata_table with compression
+            result_df = add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir=str(source_dir) + "/",
+                filetype="csv",
+                compression_type="zip",
+                archive_glob="*.csv",
+                has_header=True,
+                encoding="utf-8",
+                resume=False,
+            )
 
-        # Verify files were extracted
-        extracted_files = list(landing_dir.rglob("*.csv"))
-        assert len(extracted_files) == 2
+            # Verify metadata table was populated
+            result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.metadata")
+            assert result[0] == 2
+
+            # Verify source_paths have :: delimiter for archive files
+            paths = execute_sql_fetchone(db_conn, "SELECT array_agg(source_path) FROM test_schema.metadata")
+            assert any("::" in p for p in paths[0])
+        finally:
+            os.chdir(original_cwd)
 
     def test_add_files_to_metadata_table_resume(self, conninfo, db_conn, temp_dir):
         """Test add_files_to_metadata_table with resume=True"""
@@ -2427,8 +2417,7 @@ class TestAddFilesToMetadataTableEndToEnd:
         add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            source_dir=str(source_dir),
-            landing_dir=str(landing_dir),
+            source_dir=str(source_dir) + "/",
             filetype="csv",
             has_header=True,
             encoding="utf-8",
@@ -2443,8 +2432,7 @@ class TestAddFilesToMetadataTableEndToEnd:
         result_df = add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            source_dir=str(source_dir),
-            landing_dir=str(landing_dir),
+            source_dir=str(source_dir) + "/",
             filetype="csv",
             has_header=True,
             encoding="utf-8",
@@ -2475,8 +2463,7 @@ class TestAddFilesToMetadataTableEndToEnd:
         result_df = add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            source_dir=str(source_dir),
-            landing_dir=str(landing_dir),
+            source_dir=str(source_dir) + "/",
             filetype="csv",
             has_header=True,
             encoding="utf-8",
@@ -3045,13 +3032,11 @@ class TestUpdateTableEdgeCases:
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 source_dir TEXT,
-                landing_dir TEXT,
-                full_path TEXT PRIMARY KEY,
+                source_path TEXT PRIMARY KEY,
                 filesize BIGINT,
                 header TEXT[],
                 row_count BIGINT,
-                archive_full_path TEXT,
-                file_hash TEXT,
+                                file_hash TEXT,
                 metadata_ingest_datetime TIMESTAMP,
                 metadata_ingest_status TEXT,
                 ingest_datetime TIMESTAMP,
@@ -3065,7 +3050,7 @@ class TestUpdateTableEdgeCases:
         for csv_file, row_count in csv_files:
             execute_sql(db_conn, """
                 INSERT INTO test_schema.metadata
-                (full_path, row_count, metadata_ingest_status, landing_dir)
+                (source_path, row_count, metadata_ingest_status, source_dir)
                 VALUES ($1, $2, $3, $4)
             """, (str(csv_file), row_count, "Success", str(temp_dir) + "/"))
 
@@ -3087,7 +3072,7 @@ class TestUpdateTableEdgeCases:
             output_table="empty_output",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             resume=False,
         )
 
@@ -3114,7 +3099,7 @@ class TestUpdateTableEdgeCases:
             output_table="null_string_output",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             null_value="NA",
             resume=False,
         )
@@ -3152,7 +3137,7 @@ class TestUpdateTableEdgeCases:
             output_table="multi_pivot_output",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             pivot_mapping=pivot_mapping,
             resume=False,
         )
@@ -3175,13 +3160,11 @@ class TestUpdateTableEdgeCases:
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 source_dir TEXT,
-                landing_dir TEXT,
-                full_path TEXT PRIMARY KEY,
+                source_path TEXT PRIMARY KEY,
                 filesize BIGINT,
                 header TEXT[],
                 row_count BIGINT,
-                archive_full_path TEXT,
-                file_hash TEXT,
+                                file_hash TEXT,
                 metadata_ingest_datetime TIMESTAMP,
                 metadata_ingest_status TEXT,
                 ingest_datetime TIMESTAMP,
@@ -3193,7 +3176,7 @@ class TestUpdateTableEdgeCases:
         """)
         execute_sql(db_conn, """
             INSERT INTO test_schema.metadata
-            (full_path, row_count, metadata_ingest_status, landing_dir, status, error_message)
+            (source_path, row_count, metadata_ingest_status, source_dir, status, error_message)
             VALUES ($1, $2, $3, $4, $5, $6)
         """, (str(csv_path), 1, "Success", str(temp_dir) + "/", "Failure", "Previous error"))
 
@@ -3208,7 +3191,7 @@ class TestUpdateTableEdgeCases:
             output_table="retry_output",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(temp_dir),
+            source_dir=str(temp_dir) + "/",
             retry_failed=True,
         )
 
@@ -3341,7 +3324,7 @@ class TestDropFunctionsEdgeCases:
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 source_dir TEXT,
-                full_path TEXT PRIMARY KEY
+                source_path TEXT PRIMARY KEY
             )
         """)
         execute_sql(db_conn, "INSERT INTO test_schema.metadata VALUES ($1, $2)", ("/some/path", "/some/path/file.csv"))
@@ -3361,7 +3344,7 @@ class TestDropFunctionsEdgeCases:
         """Test drop_partition with special characters in path"""
         execute_sql(db_conn, """
             CREATE TABLE test_schema.special_test (
-                full_path TEXT,
+                source_path TEXT,
                 data TEXT
             )
         """)
@@ -3442,9 +3425,6 @@ class TestConnectionStringHandling:
             csv_path = csv_dir / f"file_{i}.csv"
             csv_path.write_text(f"name,value\nitem_{i},{i * 10}\n")
 
-        landing_dir = temp_dir / "landing"
-        landing_dir.mkdir()
-
         column_mapping = {
             "name": ([], "string"),
             "value": ([], "int"),
@@ -3454,8 +3434,7 @@ class TestConnectionStringHandling:
         add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            source_dir=str(csv_dir),
-            landing_dir=str(landing_dir),
+            source_dir=str(csv_dir) + "/",
             filetype="csv",
             has_header=True,
             resume=False,
@@ -3468,7 +3447,7 @@ class TestConnectionStringHandling:
             output_table="multi_file_test",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(landing_dir),
+            source_dir=str(csv_dir) + "/",
             resume=False,
         )
 
@@ -3498,8 +3477,7 @@ class TestConnectionStringHandling:
         add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            source_dir=str(csv_dir),
-            landing_dir=str(landing_dir),
+            source_dir=str(csv_dir) + "/",
             filetype="csv",
             has_header=True,
             resume=False,
@@ -3525,7 +3503,7 @@ class TestConnectionStringHandling:
                 schema="test_schema",
                 output_table="test",
                 filetype="csv",
-                landing_dir="/tmp",
+                source_dir="/tmp/",
                 column_mapping={"col": ([], "string")},
             )
 
@@ -3535,12 +3513,12 @@ class TestConnectionStringHandling:
         execute_sql(db_conn, """
             CREATE TABLE test_schema.metadata (
                 source_dir TEXT,
-                full_path TEXT PRIMARY KEY
+                source_path TEXT PRIMARY KEY
             )
         """)
         execute_sql(db_conn, """
             CREATE TABLE test_schema.data_table (
-                full_path TEXT,
+                source_path TEXT,
                 data TEXT
             )
         """)
@@ -3580,8 +3558,6 @@ class TestConnectionStringHandling:
         """Test that sequential operations each get fresh connections"""
         csv_dir = temp_dir / "source"
         csv_dir.mkdir()
-        landing_dir = temp_dir / "landing"
-        landing_dir.mkdir()
 
         (csv_dir / "test.csv").write_text("name,value\ntest,100\n")
 
@@ -3594,8 +3570,7 @@ class TestConnectionStringHandling:
         add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            source_dir=str(csv_dir),
-            landing_dir=str(landing_dir),
+            source_dir=str(csv_dir) + "/",
             filetype="csv",
             has_header=True,
             resume=False,
@@ -3608,7 +3583,7 @@ class TestConnectionStringHandling:
             output_table="seq_test",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(landing_dir),
+            source_dir=str(csv_dir) + "/",
             resume=False,
         )
 
@@ -3625,8 +3600,6 @@ class TestConnectionStringHandling:
         """Test that errors in one file don't break connections for subsequent files"""
         csv_dir = temp_dir / "source"
         csv_dir.mkdir()
-        landing_dir = temp_dir / "landing"
-        landing_dir.mkdir()
 
         # Create a good file and a file that will cause type conversion issues
         (csv_dir / "good.csv").write_text("name,value\ntest,100\n")
@@ -3642,8 +3615,7 @@ class TestConnectionStringHandling:
         add_files_to_metadata_table(
             conninfo=conninfo,
             schema="test_schema",
-            source_dir=str(csv_dir),
-            landing_dir=str(landing_dir),
+            source_dir=str(csv_dir) + "/",
             filetype="csv",
             has_header=True,
             resume=False,
@@ -3656,7 +3628,7 @@ class TestConnectionStringHandling:
             output_table="error_test",
             filetype="csv",
             column_mapping=column_mapping,
-            landing_dir=str(landing_dir),
+            source_dir=str(csv_dir) + "/",
             resume=False,
         )
 

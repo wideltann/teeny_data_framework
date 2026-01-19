@@ -9,6 +9,7 @@ import psycopg
 import json
 from typing import Dict, List, Tuple, Optional, Callable, Any
 from pathlib import Path
+from loguru import logger
 
 
 # S3 Helper Functions
@@ -137,6 +138,47 @@ def get_cache_path_from_s3(s3_path: str) -> Path:
     return cache_path
 
 
+def get_cache_path_from_source_path(source_path: str) -> Path:
+    """
+    Convert source_path to local cache path.
+
+    source_path can be:
+    - S3 file: s3://bucket/path/file.csv -> temp/bucket/path/file.csv
+    - S3 archive with inner path: s3://bucket/archive.zip::inner/file.csv -> temp/bucket/archive.zip/inner/file.csv
+    - Local file: /path/to/file.csv -> /path/to/file.csv (returned as-is)
+    - Local archive: /path/archive.zip::inner/file.csv -> temp/path/archive.zip/inner/file.csv
+
+    Args:
+        source_path: Source path with optional ::inner_path for archives
+
+    Returns:
+        Path to cached/local file location
+    """
+    # Check for archive delimiter
+    if "::" in source_path:
+        archive_path, inner_path = source_path.split("::", 1)
+
+        if is_s3_path(archive_path):
+            # S3 archive: temp/bucket/archive.zip/inner/file.csv
+            path_without_prefix = archive_path.replace("s3://", "")
+            cache_path = get_persistent_temp_dir() / path_without_prefix / inner_path
+        else:
+            # Local archive: temp/path/archive.zip/inner/file.csv
+            # Remove leading slash for consistent temp structure
+            clean_archive_path = archive_path.lstrip("/")
+            cache_path = get_persistent_temp_dir() / clean_archive_path / inner_path
+
+        cache_path.parent.mkdir(exist_ok=True, parents=True)
+        return cache_path
+    else:
+        # Non-archive file
+        if is_s3_path(source_path):
+            return get_cache_path_from_s3(source_path)
+        else:
+            # Local file - return as-is
+            return Path(source_path)
+
+
 def download_s3_file_with_cache(s3_path: str, filesystem: Any) -> Path:
     """
     Download S3 file to persistent cache, reusing cached file if it exists with matching size.
@@ -165,18 +207,18 @@ def download_s3_file_with_cache(s3_path: str, filesystem: Any) -> Path:
     if cache_path.exists():
         cached_size = cache_path.stat().st_size
         if cached_size == s3_size:
-            print(f"Cache HIT: Using cached {cache_path.relative_to(Path.cwd())}")
+            logger.debug(f"Cache HIT: Using cached {cache_path.relative_to(Path.cwd())}")
             return cache_path
         else:
-            print(f"Cache MISS: Size mismatch for {s3_path}")
-            print(f"  Cached: {cached_size} bytes, S3: {s3_size} bytes")
+            logger.debug(f"Cache MISS: Size mismatch for {s3_path}")
+            logger.debug(f"  Cached: {cached_size} bytes, S3: {s3_size} bytes")
     else:
-        print(f"Cache MISS: {s3_path} not in cache")
+        logger.debug(f"Cache MISS: {s3_path} not in cache")
 
     # Download from S3 to cache
-    print(f"Downloading {s3_path} -> {cache_path.relative_to(Path.cwd())}")
+    logger.info(f"Downloading {s3_path} -> {cache_path.relative_to(Path.cwd())}")
     filesystem.get(s3_path, str(cache_path))
-    print(f"Cached successfully ({s3_size} bytes)")
+    logger.debug(f"Cached successfully ({s3_size} bytes)")
 
     return cache_path
 
@@ -672,7 +714,7 @@ def row_count_check(
     conn: psycopg.Connection,
     schema: str,
     df: pd.DataFrame,
-    full_path: str,
+    source_path: str,
     unpivot_row_multiplier: Optional[int] = None,
 ) -> None:
     """
@@ -680,8 +722,8 @@ def row_count_check(
     """
     with conn.cursor() as cur:
         cur.execute(
-            f"SELECT row_count FROM {schema}.metadata WHERE full_path = %s",
-            (full_path,),
+            f"SELECT row_count FROM {schema}.metadata WHERE source_path = %s",
+            (source_path,),
         )
         result = cur.fetchone()
 
@@ -692,20 +734,20 @@ def row_count_check(
         metadata_row_count *= unpivot_row_multiplier
 
     if not metadata_row_count:
-        print("No metadata row count to compare against. Check passed.")
+        logger.debug("No metadata row count to compare against. Check passed.")
     elif metadata_row_count == output_df_row_count:
-        print(
-            f"Check passed {full_path}, metadata table row count {metadata_row_count} is equal to output table row count {output_df_row_count}"
+        logger.info(
+            f"Check passed {source_path}, metadata table row count {metadata_row_count} is equal to output table row count {output_df_row_count}"
         )
     else:
         raise ValueError(
-            f"Check failed {full_path} since metadata table row count {metadata_row_count} is not equal to output table row count {output_df_row_count}"
+            f"Check failed {source_path} since metadata table row count {metadata_row_count} is not equal to output table row count {output_df_row_count}"
         )
 
 
 def update_metadata(
     conn: psycopg.Connection,
-    full_path: str,
+    source_path: str,
     schema: str,
     error_message: Optional[str] = None,
     unpivot_row_multiplier: Optional[int] = None,
@@ -726,7 +768,7 @@ def update_metadata(
         # if these characters are in the sql string itll break
         error_message = error_message.replace("'", "").replace("`", "")
 
-    print(f"Updating metadata for {full_path}: {status}")
+    logger.info(f"Updating metadata for {source_path}: {status}")
 
     with conn.cursor() as cur:
         cur.execute(
@@ -738,7 +780,7 @@ def update_metadata(
                 error_message = %s,
                 unpivot_row_multiplier = %s,
                 ingest_runtime = %s
-            WHERE full_path = %s
+            WHERE source_path = %s
             """,
             (
                 metadata_ingest_datetime,
@@ -746,7 +788,7 @@ def update_metadata(
                 error_message,
                 unpivot_row_multiplier,
                 ingest_runtime,
-                full_path,
+                source_path,
             ),
         )
 
@@ -764,7 +806,7 @@ def update_table(
     file_list_filter_fn: Optional[Callable[[List[Path]], List[Path]]] = None,
     custom_read_fn: Optional[Callable[[str], pd.DataFrame]] = None,
     transform_fn: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
-    landing_dir: Optional[str] = None,
+    source_dir: Optional[str] = None,
     sql_glob: Optional[str] = None,
     filetype: Optional[str] = None,
     column_mapping: Optional[Dict[str, Tuple[List[str], str]]] = None,
@@ -776,49 +818,48 @@ def update_table(
     null_value: str = "",
     excel_skiprows: int = 0,
     encoding: str = "utf-8-sig",
-    filesystem: Optional[Any] = None,
+    cleanup: bool = False,
 ) -> pd.DataFrame:
     """
     Main ingestion function that reads files and writes to PostgreSQL
 
     Args:
         conninfo: PostgreSQL connection string (e.g. "postgresql://user:pass@host/db")
+        source_dir: Source directory to filter files (replaces landing_dir)
+        cleanup: If True, delete cached files after successful ingest
         ... (other args unchanged)
     """
     import time
 
-    required_params = [landing_dir, schema, conninfo, filetype]
+    required_params = [source_dir, schema, conninfo, filetype]
     if not custom_read_fn and not column_mapping_fn:
         required_params.append(column_mapping)
 
     if any(param is None for param in required_params):
-        print(f"Missing required parameters: {required_params}")
+        logger.error(f"Missing required parameters: {required_params}")
         raise ValueError(
-            "Required params: landing_dir, filetype, column_mapping, schema, conninfo. Column mapping not required if using custom_read_fn or if using column_mapping_fn"
+            "Required params: source_dir, filetype, column_mapping, schema, conninfo. Column mapping not required if using custom_read_fn or if using column_mapping_fn"
         )
 
-    # Normalize landing_dir to string with trailing slash for LIKE query
-    landing_dir = normalize_path(landing_dir) + "/"
-
-    # If the glob is omitted we create a glob using the filetype
-    sql_glob = sql_glob or f"%.{filetype}"
+    # Normalize source_dir to string with trailing slash for LIKE query
+    source_dir = normalize_path(source_dir) + "/"
 
     metadata_schema = metadata_schema or schema
 
+    # Query metadata for files to process
     sql = f"""
-        SELECT full_path
+        SELECT source_path
         FROM {metadata_schema}.metadata
         WHERE
-            landing_dir LIKE %s AND
-            full_path LIKE %s AND
+            source_dir LIKE %s AND
             metadata_ingest_status = 'Success'
     """
 
-    print(f"Metadata file search query: {sql}")
+    logger.debug(f"Metadata file search query: {sql}")
 
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (landing_dir, sql_glob))
+            cur.execute(sql, (source_dir,))
             rows = cur.fetchall()
     file_list = sorted([row[0] for row in rows])
 
@@ -827,63 +868,53 @@ def update_table(
 
     if resume:
         sql = f"""
-            SELECT full_path
+            SELECT source_path
             FROM {metadata_schema}.metadata
             WHERE
-                landing_dir LIKE %s AND
+                source_dir LIKE %s AND
                 ingest_datetime IS NOT NULL
                 {"AND status = 'Success'" if not retry_failed else ""}
         """
 
         with psycopg.connect(conninfo) as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (landing_dir,))
+                cur.execute(sql, (source_dir,))
                 rows = cur.fetchall()
-        full_path_list = set(row[0] for row in rows)
-        file_list = [f for f in file_list if f not in full_path_list]
+        processed_set = set(row[0] for row in rows)
+        file_list = [f for f in file_list if f not in processed_set]
 
     total_files_to_be_processed = sample if sample else len(file_list)
 
-    print(
+    logger.info(
         f"Output {'table' if output_table else 'schema'}: {output_table or schema} | Num files being processed: {total_files_to_be_processed} out of {len(file_list)} {'new files' if resume else 'total files'}"
     )
 
-    for i, file in enumerate(file_list):
+    for i, source_path in enumerate(file_list):
         start_time = time.time()
 
         if sample and i == sample:
             break
 
-        full_path = str(file)  # file is already a string
-
-        # Check if file is in S3
-        file_is_s3 = is_s3_path(full_path)
-
-        # Download S3 file to persistent cache if needed
-        if file_is_s3:
-            fs = get_s3_filesystem(filesystem)
-            cached_file = download_s3_file_with_cache(full_path, fs)
-            read_path = str(cached_file)
-        else:
-            read_path = full_path
+        # Derive local cache path from source_path
+        cache_path = get_cache_path_from_source_path(source_path)
 
         header = None
         has_header = True
         if header_fn:
-            header = header_fn(file)
+            header = header_fn(Path(cache_path))
             has_header = False
 
         unpivot_row_multiplier = None
         try:
             if custom_read_fn:
-                df = custom_read_fn(full_path=read_path)
+                df = custom_read_fn(full_path=str(cache_path))
             else:
                 column_mapping_use = (
-                    column_mapping_fn(file) if column_mapping_fn else column_mapping
+                    column_mapping_fn(Path(cache_path)) if column_mapping_fn else column_mapping
                 )
 
                 df = read_using_column_mapping(
-                    full_path=read_path,
+                    full_path=str(cache_path),
                     filetype=filetype,
                     column_mapping=column_mapping_use,
                     header=header,
@@ -911,7 +942,7 @@ def update_table(
                     conn=conn,
                     schema=metadata_schema,
                     df=df,
-                    full_path=full_path,
+                    source_path=source_path,
                     unpivot_row_multiplier=unpivot_row_multiplier,
                 )
 
@@ -919,15 +950,15 @@ def update_table(
                 df = transform_fn(df=df)
 
             if additional_cols_fn:
-                additional_cols_dict = additional_cols_fn(file)
+                additional_cols_dict = additional_cols_fn(Path(cache_path))
                 for col_name, col_value in additional_cols_dict.items():
                     df[col_name] = col_value
 
-            df["full_path"] = full_path
+            df["source_path"] = source_path
 
             # Write to PostgreSQL
             table_name = (
-                output_table_naming_fn(file) if output_table_naming_fn else output_table
+                output_table_naming_fn(Path(cache_path)) if output_table_naming_fn else output_table
             )
 
             # Fresh connection for write operations
@@ -936,8 +967,8 @@ def update_table(
                 if table_exists(conn, schema, table_name):
                     with conn.cursor() as cur:
                         cur.execute(
-                            f"DELETE FROM {schema}.{table_name} WHERE full_path = %s",
-                            (full_path,),
+                            f"DELETE FROM {schema}.{table_name} WHERE source_path = %s",
+                            (source_path,),
                         )
 
                 # Bulk load using COPY
@@ -950,12 +981,21 @@ def update_table(
             with psycopg.connect(conninfo) as conn:
                 update_metadata(
                     conn=conn,
-                    full_path=full_path,
+                    source_path=source_path,
                     schema=metadata_schema,
                     unpivot_row_multiplier=unpivot_row_multiplier,
                     ingest_runtime=ingest_runtime,
                 )
                 conn.commit()
+
+            # Cleanup cached file if requested
+            if cleanup and is_s3_path(source_path.split("::")[0]):
+                try:
+                    cache_path.unlink()
+                    logger.debug(f"Cleaned up cache file: {cache_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to cleanup cache file {cache_path}: {cleanup_error}")
+
         except Exception as e:
             error_str = str(e)
 
@@ -963,7 +1003,7 @@ def update_table(
             with psycopg.connect(conninfo) as conn:
                 update_metadata(
                     conn=conn,
-                    full_path=full_path,
+                    source_path=source_path,
                     schema=metadata_schema,
                     error_message=error_str,
                     unpivot_row_multiplier=unpivot_row_multiplier,
@@ -973,19 +1013,21 @@ def update_table(
             # Truncate error for printing
             if len(error_str) > 200:
                 error_str = error_str[:200] + "... [truncated]"
-            print(f"Failed on {file} with {error_str}")
+            logger.error(f"Failed on {source_path} with {error_str}")
 
     # Return metadata results
+    # Use '%' as default glob to match all files in source_dir
+    glob_pattern = sql_glob if sql_glob else "%"
     sql = f"""
         SELECT *
         FROM {metadata_schema}.metadata
-        WHERE landing_dir LIKE %s AND full_path LIKE %s
+        WHERE source_dir LIKE %s AND source_path LIKE %s
         ORDER BY ingest_datetime DESC
     """
 
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (landing_dir, sql_glob))
+            cur.execute(sql, (source_dir, glob_pattern))
             columns = [desc[0] for desc in cur.description]
             rows = cur.fetchall()
             return pd.DataFrame(rows, columns=columns)
@@ -1033,177 +1075,129 @@ def get_csv_header_and_row_count(
 
 def extract_and_add_zip_files(
     file_list: Optional[List[str]] = None,
-    full_path_list: Optional[List[str]] = None,
+    source_path_list: Optional[List[str]] = None,
     source_dir: Optional[str] = None,
-    landing_dir: Optional[str] = None,
     has_header: bool = True,
     filetype: Optional[str] = None,
     resume: Optional[bool] = None,
     sample: Optional[int] = None,
     encoding: Optional[str] = None,
     archive_glob: Optional[str] = None,
-    num_source_parents: int = 0,
     filesystem: Optional[Any] = None,
+    **kwargs,  # Accept but ignore extra kwargs for compatibility
 ) -> List[Dict[str, Any]]:
     """
     Extract files from ZIP archives and add to metadata.
-    All paths are strings (both local and S3).
+
+    source_path format for archives: "archive_path::inner_path"
+    e.g., "s3://bucket/data.zip::folder/file.csv"
+
+    Files are extracted to temp/ cache, mirroring the source structure.
     """
     try:
         import zipfile_deflate64 as zipfile
     except Exception:
-        print("Missing zipfile_deflate64, using zipfile")
+        logger.debug("Missing zipfile_deflate64, using zipfile")
         import zipfile
 
     import fnmatch
+    import shutil
 
-    # Normalize paths
+    # Normalize source_dir
     source_dir = normalize_path(source_dir) if source_dir else None
-    landing_dir = normalize_path(landing_dir) if landing_dir else None
 
     rows = []
     num_processed = 0
 
-    # Check if landing_dir is S3
-    landing_is_s3 = is_s3_path(landing_dir) if landing_dir else False
-
-    # Get filesystem if any S3 paths involved
+    # Get filesystem if any S3 source paths involved
     fs = None
-    if landing_is_s3 or any(is_s3_path(f) for f in file_list):
+    if any(is_s3_path(f) for f in file_list):
         fs = get_s3_filesystem(filesystem)
 
-    # Convert full_path_list to set for fast lookup
-    full_path_set = set(full_path_list) if full_path_list else set()
+    # Convert source_path_list to set for fast lookup
+    source_path_set = set(source_path_list) if source_path_list else set()
 
     for compressed in file_list:
         if sample and num_processed == sample:
             break
 
-        compressed_str = str(compressed)
+        archive_path = str(compressed)
 
-        # Download from S3 if needed (uses persistent cache)
-        if is_s3_path(compressed_str):
-            cached_zip = download_s3_file_with_cache(compressed_str, fs)
+        # Download archive from S3 if needed (uses persistent cache)
+        if is_s3_path(archive_path):
+            cached_zip = download_s3_file_with_cache(archive_path, fs)
             zip_path = str(cached_zip)
         else:
-            zip_path = compressed_str
-
-        # Get zip file stem (name without extension)
-        zip_stem = path_basename(compressed_str).rsplit(".", 1)[0]
+            zip_path = archive_path
 
         with zipfile.ZipFile(zip_path) as zip_ref:
             namelist = [
                 f for f in zip_ref.namelist() if fnmatch.fnmatch(f, archive_glob)
             ]
 
-            for f in namelist:
+            for inner_path in namelist:
                 if sample and num_processed == sample:
                     break
+
+                # Build source_path: archive_path::inner_path
+                source_path = f"{archive_path}::{inner_path}"
+
+                # Check if already processed
+                if resume and source_path in source_path_set:
+                    logger.debug(f"Skipped (in metadata): {source_path}")
+                    continue
 
                 num_processed += 1
                 file_num = (
                     f"{num_processed}/{sample}" if sample else f"{num_processed} |"
                 )
 
-                # Get parent directories from path
-                if num_source_parents > 0:
-                    parts = compressed_str.replace("s3://", "").split("/")
-                    parent_parts = parts[-(num_source_parents + 1) : -1]
-                    parents = "/".join(parent_parts) if parent_parts else ""
-                else:
-                    parents = ""
-
-                compressed_file_basename = path_basename(f)
-
-                # Build output path
-                if parents:
-                    raw_output_path = path_join(
-                        landing_dir, parents, zip_stem, compressed_file_basename
-                    )
-                else:
-                    raw_output_path = path_join(
-                        landing_dir, zip_stem, compressed_file_basename
-                    )
-
-                # Handle S3 or local landing directory
-                if landing_is_s3:
-                    # Extract to temp directory that mirrors the S3 landing structure
-                    # e.g., s3://bucket/landing/file.txt -> temp/bucket/landing/file.txt
-                    landing_path_without_prefix = raw_output_path.replace("s3://", "")
-                    temp_output_path = get_persistent_temp_dir() / landing_path_without_prefix
-                    temp_output_path.parent.mkdir(exist_ok=True, parents=True)
-                else:
-                    # Local landing directory
-                    temp_output_path = Path(raw_output_path)
-                    temp_output_path.parent.mkdir(exist_ok=True, parents=True)
-
-                # Check if already processed
-                if resume and raw_output_path in full_path_set:
-                    print(f"{file_num} Skipped extracting {compressed_str}:{f}")
-                    continue
+                # Get cache path for extracted file
+                cache_path = get_cache_path_from_source_path(source_path)
 
                 try:
-                    import tempfile
-                    import shutil
-
-                    # Extract to temp directory, then move to final location
+                    # Extract to temp directory, then move to cache location
                     # Using extract() + move instead of read() to avoid loading entire file into RAM
-                    # tempfile context manager ensures cleanup even on failure
+                    import tempfile
+
                     with tempfile.TemporaryDirectory() as temp_extract_dir:
-                        zip_ref.extract(f, temp_extract_dir)
-                        extracted_file = Path(temp_extract_dir) / f
+                        zip_ref.extract(inner_path, temp_extract_dir)
+                        extracted_file = Path(temp_extract_dir) / inner_path
 
-                        shutil.move(str(extracted_file), str(temp_output_path))
+                        shutil.move(str(extracted_file), str(cache_path))
 
-                    if landing_is_s3:
-                        print(f"{file_num} Extracted to {temp_output_path}")
-                        fs.put(str(temp_output_path), raw_output_path)
-                        print(f"{file_num} Uploaded to {raw_output_path}")
-                    else:
-                        print(f"{file_num} Extracted {f} to {raw_output_path}")
+                    logger.info(f"{file_num} Extracted {inner_path} to {cache_path}")
 
                     row = get_file_metadata_row(
+                        source_path=source_path,
                         source_dir=source_dir,
-                        landing_dir=landing_dir,
                         filetype=filetype,
-                        archive_full_path=compressed_str,
-                        file=raw_output_path,
                         has_header=has_header,
                         encoding=encoding,
-                        filesystem=filesystem,
                     )
 
                 except Exception as e:
-                    print(f"Failed on {f} with {e}")
+                    logger.error(f"Failed on {inner_path} with {e}")
 
                     row = get_file_metadata_row(
+                        source_path=source_path,
                         source_dir=source_dir,
-                        landing_dir=landing_dir,
                         filetype=filetype,
-                        file=None,
-                        archive_full_path=compressed_str,
                         has_header=has_header,
                         error_message=str(e),
                         encoding=encoding,
-                        filesystem=filesystem,
                     )
 
                     # Cleanup failed files
-                    if temp_output_path.exists():
-                        temp_output_path.unlink()
-                        print(f"Removed bad extracted file: {f}")
+                    if cache_path.exists():
+                        cache_path.unlink()
+                        logger.debug(f"Removed bad extracted file: {inner_path}")
 
-                    if not landing_is_s3:
-                        raw_output_dir_path = Path(raw_output_path).parent
-                        if raw_output_dir_path.exists() and not any(
-                            raw_output_dir_path.iterdir()
-                        ):
-                            raw_output_dir_path.rmdir()
-                            print(f"Removed empty output dir: {raw_output_dir_path}")
-                finally:
-                    # Cleanup temp file if using S3
-                    if landing_is_s3 and temp_output_path.exists():
-                        temp_output_path.unlink()
+                    if cache_path.parent.exists() and not any(
+                        cache_path.parent.iterdir()
+                    ):
+                        cache_path.parent.rmdir()
+                        logger.debug(f"Removed empty dir: {cache_path.parent}")
 
                 rows.append(row)
 
@@ -1212,122 +1206,80 @@ def extract_and_add_zip_files(
 
 def add_files(
     source_dir: Optional[str] = None,
-    landing_dir: Optional[str] = None,
     resume: Optional[bool] = None,
     sample: Optional[int] = None,
     file_list: Optional[List[str]] = None,
     filetype: Optional[str] = None,
     has_header: bool = True,
-    full_path_list: Optional[List[str]] = None,
+    source_path_list: Optional[List[str]] = None,
     encoding: Optional[str] = None,
-    num_source_parents: int = 0,
     filesystem: Optional[Any] = None,
+    **kwargs,  # Accept but ignore extra kwargs for compatibility
 ) -> List[Dict[str, Any]]:
     """
-    Copy files from search directory to landing directory and add to metadata.
-    All paths are strings (both local and S3).
+    Process non-archive files and add to metadata.
+
+    For S3 files: downloads to temp/ cache (mirroring S3 structure)
+    For local files: reads directly from source (no copy needed)
+
+    source_path is the file's identity (primary key in metadata).
     """
-    import shutil
-
-    # Normalize paths
+    # Normalize source_dir
     source_dir = normalize_path(source_dir) if source_dir else None
-    landing_dir = normalize_path(landing_dir) if landing_dir else None
 
-    # Filter out already processed files
-    if full_path_list:
-        full_path_set = set(full_path_list)
-        file_list = [f for f in file_list if f not in full_path_set]
+    # Build set of already processed source paths for quick lookup
+    source_path_set = set(source_path_list) if source_path_list else set()
 
-    total_files_to_be_processed = sample if sample else len(file_list)
+    logger.info(f"Processing up to {sample if sample else len(file_list)} files...")
 
-    print(
-        f"Num files being processed: {total_files_to_be_processed} out of {len(file_list)} {'new files' if resume else 'total files'}"
-    )
-
-    # Check if paths are S3
-    landing_is_s3 = is_s3_path(landing_dir) if landing_dir else False
-
-    # Get filesystem if any S3 paths involved
+    # Get filesystem if any S3 source paths involved
     fs = None
-    if landing_is_s3 or any(is_s3_path(f) for f in file_list):
+    if any(is_s3_path(f) for f in file_list):
         fs = get_s3_filesystem(filesystem)
 
     rows = []
+    num_processed = 0
     for i, file in enumerate(file_list):
-        if sample and i == sample:
+        source_path = str(file)  # This IS the source_path (primary key)
+
+        # Check if already processed (source_path in metadata)
+        if source_path in source_path_set:
+            logger.debug(f"Skipped (in metadata): {path_basename(source_path)}")
+            continue
+
+        if sample and num_processed == sample:
             break
 
+        num_processed += 1
+
         try:
-            file_str = str(file)
-            file_is_s3 = is_s3_path(file_str)
-
-            # Get filename and parent directories
-            file_name = path_basename(file_str)
-            if num_source_parents > 0:
-                # Extract parent directories from path
-                parts = file_str.replace("s3://", "").split("/")
-                parent_parts = parts[-(num_source_parents + 1) : -1]
-                parents = "/".join(parent_parts) if parent_parts else ""
-            else:
-                parents = ""
-
-            # Build landing path
-            if parents:
-                landing_path = path_join(landing_dir, parents, file_name)
-            else:
-                landing_path = path_join(landing_dir, file_name)
-
-            # Cache S3 source files first, then copy to landing location
-            if file_is_s3:
-                # Download to persistent cache first
-                cached_file = download_s3_file_with_cache(file_str, fs)
-                source_path = str(cached_file)
-            else:
-                source_path = file_str
-
-            # Copy/upload file to landing location
-            if landing_is_s3:
-                # Upload to S3 landing
-                fs.put(source_path, landing_path)
-                print(f"Uploaded to {landing_path}")
-            else:
-                # Local landing directory
-                landing_path_dir = path_parent(landing_path)
-                if landing_path_dir:
-                    Path(landing_path_dir).mkdir(exist_ok=True, parents=True)
-
-                if landing_dir != source_dir or file_is_s3:
-                    # Copy to landing (either from cache or local source)
-                    shutil.copy2(source_path, landing_path)
-                    if file_is_s3:
-                        print(f"Copied from cache to {landing_path}")
-                    else:
-                        print(f"Copied {file_str} to {landing_path}")
+            # For S3 files, download to cache; for local files, they're already in place
+            if is_s3_path(source_path):
+                cache_path = get_cache_path_from_source_path(source_path)
+                fs.get(source_path, str(cache_path))
+                logger.info(f"Downloaded {source_path} to {cache_path}")
+            # Local files don't need copying - get_cache_path_from_source_path returns the path as-is
 
             row = get_file_metadata_row(
+                source_path=source_path,
                 source_dir=source_dir,
-                landing_dir=landing_dir,
                 filetype=filetype,
-                file=landing_path,
                 has_header=has_header,
                 encoding=encoding,
-                filesystem=filesystem,
             )
 
-            print(f"Processing file {i + 1}/{sample if sample else len(file_list)}")
+            logger.info(f"Processed file {num_processed}: {path_basename(source_path)}")
 
         except Exception as e:
-            print(f"Failed on {file} with {e}")
+            logger.error(f"Failed on {source_path} with {e}")
 
             row = get_file_metadata_row(
+                source_path=source_path,
                 source_dir=source_dir,
-                landing_dir=landing_dir,
                 filetype=filetype,
-                file=file,
                 has_header=has_header,
                 error_message=str(e),
                 encoding=encoding,
-                filesystem=filesystem,
             )
 
         rows.append(row)
@@ -1336,36 +1288,37 @@ def add_files(
 
 
 def get_file_metadata_row(
+    source_path: Optional[str] = None,
     source_dir: Optional[str] = None,
-    landing_dir: Optional[str] = None,
-    file: Optional[str] = None,
     filetype: Optional[str] = None,
-    archive_full_path: Optional[str] = None,
     has_header: Optional[bool] = None,
     error_message: Optional[str] = None,
     encoding: Optional[str] = None,
-    filesystem: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
-    Generate metadata row for a file. All paths are strings.
+    Generate metadata row for a file.
+
+    Args:
+        source_path: Full source identity (e.g., "s3://bucket/file.csv" or "s3://bucket/archive.zip::inner/file.csv")
+        source_dir: Source directory for filtering (with trailing slash)
+        filetype: File type (csv, tsv, psv, etc.)
+        has_header: Whether file has header row
+        error_message: Error message if extraction failed
+        encoding: File encoding
     """
     import hashlib
     import time
     from datetime import datetime
 
-    # Normalize paths to strings with trailing slash for consistent LIKE queries
+    # Normalize source_dir with trailing slash for consistent LIKE queries
     source_dir = normalize_path(source_dir) + "/" if source_dir else None
-    landing_dir = normalize_path(landing_dir) + "/" if landing_dir else None
-    file_str = str(file) if file else None
 
     row = {
+        "source_path": source_path,
         "source_dir": source_dir,
-        "landing_dir": landing_dir,
-        "full_path": file_str,
         "filesize": None,
         "header": None,
         "row_count": None,
-        "archive_full_path": archive_full_path,
         "file_hash": None,
         "metadata_ingest_datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "metadata_ingest_status": "Failure",
@@ -1377,46 +1330,39 @@ def get_file_metadata_row(
 
     start_time = time.time()
 
-    # Check if file is in S3 and download to persistent cache if needed
-    file_is_s3 = is_s3_path(file_str) if file_str else False
-
-    if file_is_s3:
-        fs = get_s3_filesystem(filesystem)
-        cached_file = download_s3_file_with_cache(file_str, fs)
-        read_file = str(cached_file)
-    else:
-        read_file = file_str
+    # Derive local cache path from source_path
+    cache_path = get_cache_path_from_source_path(source_path)
 
     try:
         header, row_count = None, None
         match filetype:
             case "csv":
                 header, row_count = get_csv_header_and_row_count(
-                    file=read_file, has_header=has_header, encoding=encoding
+                    file=str(cache_path), has_header=has_header, encoding=encoding
                 )
             case "tsv":
                 header, row_count = get_csv_header_and_row_count(
-                    file=read_file,
+                    file=str(cache_path),
                     has_header=has_header,
                     separator="\t",
                     encoding=encoding,
                 )
             case "psv":
                 header, row_count = get_csv_header_and_row_count(
-                    file=read_file,
+                    file=str(cache_path),
                     has_header=has_header,
                     separator="|",
                     encoding=encoding,
                 )
             case "fixed_width":
                 header, row_count = get_csv_header_and_row_count(
-                    file=read_file, has_header=False, encoding=encoding
+                    file=str(cache_path), has_header=False, encoding=encoding
                 )
             case "xlsx":
-                df = pd.read_excel(read_file)
+                df = pd.read_excel(cache_path)
                 header, row_count = list(df.columns), len(df)
             case "parquet":
-                df = pd.read_parquet(read_file)
+                df = pd.read_parquet(cache_path)
                 header, row_count = list(df.columns), len(df)
             case "xml":
                 # there isnt really a standard way of getting these values
@@ -1425,12 +1371,12 @@ def get_file_metadata_row(
                 raise Exception(f"Unsupported filetype: {filetype}")
 
         row["header"], row["row_count"] = header, row_count
-        row["file_hash"] = hashlib.md5(open(read_file, "rb").read()).hexdigest()
-        row["filesize"] = Path(read_file).stat().st_size
+        row["file_hash"] = hashlib.md5(open(cache_path, "rb").read()).hexdigest()
+        row["filesize"] = cache_path.stat().st_size
         row["metadata_ingest_status"] = "Success"
 
-        filename = path_basename(file_str) if file_str else "unknown"
-        print(
+        filename = path_basename(source_path) if source_path else "unknown"
+        logger.info(
             f"Row count: {row_count} Filename: {filename} | Runtime: {time.time() - start_time:.2f}"
         )
 
@@ -1468,10 +1414,8 @@ def add_files_to_metadata_table(
         if not archive_glob:
             archive_glob = f"*.{filetype}"
             kwargs["archive_glob"] = archive_glob
-        sql_glob = archive_glob.replace("*", "%")
 
-    # Normalize paths to strings
-    landing_dir = normalize_path(kwargs["landing_dir"])
+    # Normalize source_dir
     source_dir = normalize_path(kwargs["source_dir"])
 
     # Handle S3 or local paths for file listing
@@ -1488,7 +1432,6 @@ def add_files_to_metadata_table(
         file_list = [f.as_posix() for f in Path(source_dir).rglob(glob)]
 
     kwargs["source_dir"] = source_dir
-    kwargs["landing_dir"] = landing_dir
 
     file_list_filter_fn = kwargs.pop("file_list_filter_fn", None)
     if file_list_filter_fn:
@@ -1504,13 +1447,11 @@ def add_files_to_metadata_table(
         if not table_exists(conn, schema, "metadata"):
             create_table_sql = f"""
                 CREATE TABLE {output_table} (
+                    source_path TEXT PRIMARY KEY,
                     source_dir TEXT,
-                    landing_dir TEXT,
-                    full_path TEXT PRIMARY KEY,
                     filesize BIGINT,
                     header TEXT[],
                     row_count BIGINT,
-                    archive_full_path TEXT,
                     file_hash TEXT,
                     metadata_ingest_datetime TIMESTAMP,
                     metadata_ingest_status TEXT,
@@ -1528,22 +1469,21 @@ def add_files_to_metadata_table(
     resume = kwargs.get("resume", False)
     retry_failed = kwargs.pop("retry_failed", False)
 
-    kwargs["full_path_list"] = []
+    kwargs["source_path_list"] = []
     if resume:
         sql = f"""
-            SELECT full_path
+            SELECT source_path
             FROM {output_table}
             WHERE
-                source_dir LIKE %s AND
-                full_path LIKE %s
+                source_dir LIKE %s
                 {"AND metadata_ingest_status = 'Success'" if not retry_failed else ""}
         """
 
         with psycopg.connect(conninfo) as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (source_dir, sql_glob))
+                cur.execute(sql, (source_dir,))
                 rows = cur.fetchall()
-        kwargs["full_path_list"] = [row[0] for row in rows]
+        kwargs["source_path_list"] = [row[0] for row in rows]
 
     match compression_type:
         case "zip":
@@ -1554,9 +1494,9 @@ def add_files_to_metadata_table(
             raise Exception("Unsupported compression type")
 
     if len(rows) == 0:
-        print("Did not add any files to metadata table")
+        logger.info("Did not add any files to metadata table")
     else:
-        rows_sorted = sorted(rows, key=lambda x: x["full_path"] or "")
+        rows_sorted = sorted(rows, key=lambda x: x["source_path"] or "")
 
         # Upsert to metadata table using PostgreSQL's ON CONFLICT
         with psycopg.connect(conninfo) as conn:
@@ -1565,30 +1505,26 @@ def add_files_to_metadata_table(
                     cur.execute(
                         f"""
                         INSERT INTO {output_table}
-                        (source_dir, landing_dir, full_path, filesize, header, row_count,
-                         archive_full_path, file_hash, metadata_ingest_datetime, metadata_ingest_status)
+                        (source_path, source_dir, filesize, header, row_count,
+                         file_hash, metadata_ingest_datetime, metadata_ingest_status)
                         VALUES
-                        (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (full_path)
+                        (%s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (source_path)
                         DO UPDATE SET
                             source_dir = EXCLUDED.source_dir,
-                            landing_dir = EXCLUDED.landing_dir,
                             filesize = EXCLUDED.filesize,
                             header = EXCLUDED.header,
                             row_count = EXCLUDED.row_count,
-                            archive_full_path = EXCLUDED.archive_full_path,
                             file_hash = EXCLUDED.file_hash,
                             metadata_ingest_datetime = EXCLUDED.metadata_ingest_datetime,
                             metadata_ingest_status = EXCLUDED.metadata_ingest_status
                         """,
                         (
+                            row["source_path"],
                             row["source_dir"],
-                            row["landing_dir"],
-                            row["full_path"],
                             row["filesize"],
                             row["header"],
                             row["row_count"],
-                            row["archive_full_path"],
                             row["file_hash"],
                             row["metadata_ingest_datetime"],
                             row["metadata_ingest_status"],
@@ -1596,17 +1532,17 @@ def add_files_to_metadata_table(
                     )
             conn.commit()
 
-    # Return metadata results
+    # Return metadata results for this source_dir
     sql = f"""
         SELECT *
         FROM {output_table}
-        WHERE source_dir LIKE %s AND full_path LIKE %s
+        WHERE source_dir LIKE %s
         ORDER BY metadata_ingest_datetime DESC
     """
 
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (source_dir, sql_glob))
+            cur.execute(sql, (source_dir,))
             columns = [desc[0] for desc in cur.description]
             rows = cur.fetchall()
             return pd.DataFrame(rows, columns=columns)
@@ -1633,13 +1569,13 @@ def drop_metadata_by_source(
             )
             count_before = cur.fetchone()[0]
 
-        print(f"Rows before drop: {count_before}")
+        logger.info(f"Rows before drop: {count_before}")
 
         with conn.cursor() as cur:
             cur.execute(
                 f"DELETE FROM {schema}.metadata WHERE source_dir LIKE %s", (source_dir,)
             )
-            print(f"Deleted {cur.rowcount} rows")
+            logger.info(f"Deleted {cur.rowcount} rows")
         conn.commit()
 
         with conn.cursor() as cur:
@@ -1649,7 +1585,7 @@ def drop_metadata_by_source(
             )
             count_after = cur.fetchone()[0]
 
-        print(f"Rows after drop: {count_after}")
+        logger.info(f"Rows after drop: {count_after}")
 
 
 def drop_partition(
@@ -1664,27 +1600,27 @@ def drop_partition(
     Args:
         conninfo: PostgreSQL connection string (e.g. "postgresql://user:pass@host/db")
     """
-    print(
-        f"Running: DELETE FROM {schema}.{table} WHERE full_path LIKE '{partition_key}'"
+    logger.info(
+        f"Running: DELETE FROM {schema}.{table} WHERE source_path LIKE '{partition_key}'"
     )
 
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                f"DELETE FROM {schema}.{table} WHERE full_path LIKE %s", (partition_key,)
+                f"DELETE FROM {schema}.{table} WHERE source_path LIKE %s", (partition_key,)
             )
-            print(f"Deleted {cur.rowcount} rows")
+            logger.info(f"Deleted {cur.rowcount} rows")
         conn.commit()
 
     # PostgreSQL doesn't need vacuum the same way Spark does
     # VACUUM reclaims storage, but happens automatically in most cases
-    print("Note: PostgreSQL autovacuum will reclaim space automatically")
+    logger.debug("Note: PostgreSQL autovacuum will reclaim space automatically")
 
 
 def drop_file_from_metadata_and_table(
     conninfo: str,
     table: str,
-    full_path: str,
+    source_path: str,
     schema: str,
 ) -> None:
     """
@@ -1692,20 +1628,19 @@ def drop_file_from_metadata_and_table(
 
     Args:
         conninfo: PostgreSQL connection string (e.g. "postgresql://user:pass@host/db")
+        source_path: The source_path identifier (e.g. s3://bucket/file.csv or s3://bucket/archive.zip::inner/file.csv)
     """
-    full_path = Path(full_path).as_posix()
-
     # Delete from metadata
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                f"DELETE FROM {schema}.metadata WHERE full_path = %s", (full_path,)
+                f"DELETE FROM {schema}.metadata WHERE source_path = %s", (source_path,)
             )
-            print(f"Deleted {cur.rowcount} rows from metadata")
+            logger.info(f"Deleted {cur.rowcount} rows from metadata")
         conn.commit()
 
     # Delete from data table
-    drop_partition(conninfo=conninfo, table=table, partition_key=full_path, schema=schema)
+    drop_partition(conninfo=conninfo, table=table, partition_key=source_path, schema=schema)
 
 
 # CLI SCHEMA INFERENCE FUNCTIONS
