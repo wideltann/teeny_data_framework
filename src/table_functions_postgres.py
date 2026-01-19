@@ -12,6 +12,10 @@ from pathlib import Path
 from loguru import logger
 
 
+# Module-level variable to override temp directory (used for ephemeral cache)
+_temp_dir_override: Optional[Path] = None
+
+
 # S3 Helper Functions
 
 
@@ -101,15 +105,28 @@ def get_s3_filesystem(filesystem: Optional[Any] = None) -> Any:
 
 def get_persistent_temp_dir() -> Path:
     """
-    Get persistent temp directory in current working directory.
-    Creates temp/ directory if it doesn't exist.
+    Get temp directory for caching files.
+
+    If _temp_dir_override is set (via ephemeral_cache context), uses that.
+    Otherwise creates/uses temp/ directory in current working directory.
 
     Returns:
-        Path to temp/ directory (e.g., /path/to/project/temp)
+        Path to temp directory
     """
+    global _temp_dir_override
+    if _temp_dir_override is not None:
+        _temp_dir_override.mkdir(exist_ok=True, parents=True)
+        return _temp_dir_override
+
     temp_dir = Path.cwd() / "temp"
     temp_dir.mkdir(exist_ok=True, parents=True)
     return temp_dir
+
+
+def set_temp_dir_override(path: Optional[Path]) -> None:
+    """Set the temp directory override (used internally by ephemeral_cache)"""
+    global _temp_dir_override
+    _temp_dir_override = path
 
 
 def get_cache_path_from_s3(s3_path: str) -> Path:
@@ -819,6 +836,7 @@ def update_table(
     excel_skiprows: int = 0,
     encoding: str = "utf-8-sig",
     cleanup: bool = False,
+    ephemeral_cache: bool = False,
 ) -> pd.DataFrame:
     """
     Main ingestion function that reads files and writes to PostgreSQL
@@ -827,8 +845,79 @@ def update_table(
         conninfo: PostgreSQL connection string (e.g. "postgresql://user:pass@host/db")
         source_dir: Source directory to filter files (replaces landing_dir)
         cleanup: If True, delete cached files after successful ingest
+        ephemeral_cache: If True, use a temporary directory that is deleted after processing.
+                        If False (default), use persistent temp/ directory.
         ... (other args unchanged)
     """
+    import time
+    import tempfile
+
+    # Handle ephemeral cache mode
+    temp_dir_context = None
+    if ephemeral_cache:
+        temp_dir_context = tempfile.TemporaryDirectory()
+        set_temp_dir_override(Path(temp_dir_context.name))
+
+    try:
+        return _update_table_impl(
+            conninfo=conninfo,
+            resume=resume,
+            retry_failed=retry_failed,
+            sample=sample,
+            schema=schema,
+            metadata_schema=metadata_schema,
+            output_table=output_table,
+            output_table_naming_fn=output_table_naming_fn,
+            additional_cols_fn=additional_cols_fn,
+            file_list_filter_fn=file_list_filter_fn,
+            custom_read_fn=custom_read_fn,
+            transform_fn=transform_fn,
+            source_dir=source_dir,
+            sql_glob=sql_glob,
+            filetype=filetype,
+            column_mapping=column_mapping,
+            column_mapping_fn=column_mapping_fn,
+            pivot_mapping=pivot_mapping,
+            header_fn=header_fn,
+            null_value=null_value,
+            excel_skiprows=excel_skiprows,
+            encoding=encoding,
+            cleanup=cleanup,
+        )
+    finally:
+        if temp_dir_context:
+            set_temp_dir_override(None)
+            temp_dir_context.cleanup()
+
+
+def _update_table_impl(
+    conninfo: Optional[str] = None,
+    resume: bool = False,
+    retry_failed: bool = False,
+    sample: Optional[int] = None,
+    schema: Optional[str] = None,
+    metadata_schema: Optional[str] = None,
+    output_table: Optional[str] = None,
+    output_table_naming_fn: Optional[Callable[[Path], str]] = None,
+    additional_cols_fn: Optional[Callable[[Path], Dict[str, Any]]] = None,
+    file_list_filter_fn: Optional[Callable[[List[Path]], List[Path]]] = None,
+    custom_read_fn: Optional[Callable[[str], pd.DataFrame]] = None,
+    transform_fn: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
+    source_dir: Optional[str] = None,
+    sql_glob: Optional[str] = None,
+    filetype: Optional[str] = None,
+    column_mapping: Optional[Dict[str, Tuple[List[str], str]]] = None,
+    column_mapping_fn: Optional[
+        Callable[[Path], Dict[str, Tuple[List[str], str]]]
+    ] = None,
+    pivot_mapping: Optional[Dict[str, Any]] = None,
+    header_fn: Optional[Callable[[Path], List[str]]] = None,
+    null_value: str = "",
+    excel_skiprows: int = 0,
+    encoding: str = "utf-8-sig",
+    cleanup: bool = False,
+) -> pd.DataFrame:
+    """Internal implementation of update_table"""
     import time
 
     required_params = [source_dir, schema, conninfo, filetype]
@@ -1388,14 +1477,35 @@ def get_file_metadata_row(
 
 
 def add_files_to_metadata_table(
-    conninfo: str, **kwargs: Any
+    conninfo: str, ephemeral_cache: bool = False, **kwargs: Any
 ) -> pd.DataFrame:
     """
     Add files to metadata table, creating it if necessary
 
     Args:
         conninfo: PostgreSQL connection string (e.g. "postgresql://user:pass@host/db")
+        ephemeral_cache: If True, use a temporary directory that is deleted after processing.
+                        If False (default), use persistent temp/ directory.
     """
+    import tempfile
+
+    temp_dir_context = None
+    if ephemeral_cache:
+        temp_dir_context = tempfile.TemporaryDirectory()
+        set_temp_dir_override(Path(temp_dir_context.name))
+
+    try:
+        return _add_files_to_metadata_table_impl(conninfo, **kwargs)
+    finally:
+        if temp_dir_context:
+            set_temp_dir_override(None)
+            temp_dir_context.cleanup()
+
+
+def _add_files_to_metadata_table_impl(
+    conninfo: str, **kwargs: Any
+) -> pd.DataFrame:
+    """Internal implementation of add_files_to_metadata_table"""
     schema = kwargs.pop("schema", None)
     if not schema:
         raise Exception("You must provide the schema as a param")

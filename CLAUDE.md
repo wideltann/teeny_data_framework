@@ -380,6 +380,7 @@ Quick reference for `update_table()` optional parameters:
 | `resume` | `bool` | Skip already-processed files |
 | `retry_failed` | `bool` | Re-process failed files |
 | `cleanup` | `bool` | Delete cached files after successful ingestion |
+| `ephemeral_cache` | `bool` | Use temporary directory (auto-deleted) instead of persistent `temp/` |
 
 ## File Type Reference
 

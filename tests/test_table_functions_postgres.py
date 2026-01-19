@@ -3644,5 +3644,79 @@ class TestConnectionStringHandling:
                 assert count >= 1  # At least one good file loaded
 
 
+class TestEphemeralCache:
+    """Test ephemeral_cache flag for temporary directory usage"""
+
+    def test_ephemeral_cache_add_files(self, conninfo, temp_dir):
+        """Test that ephemeral_cache=True uses a temp directory that gets cleaned up"""
+        from src.table_functions_postgres import get_persistent_temp_dir
+
+        csv_dir = temp_dir / "source"
+        csv_dir.mkdir()
+        (csv_dir / "test.csv").write_text("name,value\ntest,100\n")
+
+        # Get the persistent temp dir path before
+        persistent_temp = get_persistent_temp_dir()
+
+        # Run with ephemeral_cache=True
+        add_files_to_metadata_table(
+            conninfo=conninfo,
+            schema="test_schema",
+            source_dir=str(csv_dir) + "/",
+            filetype="csv",
+            has_header=True,
+            ephemeral_cache=True,
+        )
+
+        # Verify data was added to metadata
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM test_schema.metadata")
+                assert cur.fetchone()[0] == 1
+
+        # After ephemeral mode, get_persistent_temp_dir should return normal path again
+        assert get_persistent_temp_dir() == persistent_temp
+
+    def test_ephemeral_cache_update_table(self, conninfo, temp_dir):
+        """Test that update_table with ephemeral_cache=True works"""
+        csv_dir = temp_dir / "source"
+        csv_dir.mkdir()
+        (csv_dir / "test.csv").write_text("name,value\ntest,100\n")
+
+        column_mapping = {
+            "name": ([], "string"),
+            "value": ([], "int"),
+        }
+
+        # First add files (using persistent cache is fine here)
+        add_files_to_metadata_table(
+            conninfo=conninfo,
+            schema="test_schema",
+            source_dir=str(csv_dir) + "/",
+            filetype="csv",
+            has_header=True,
+        )
+
+        # Then update table with ephemeral cache
+        result_df = update_table(
+            conninfo=conninfo,
+            schema="test_schema",
+            output_table="ephemeral_test",
+            filetype="csv",
+            column_mapping=column_mapping,
+            source_dir=str(csv_dir) + "/",
+            ephemeral_cache=True,
+        )
+
+        assert len(result_df) == 1
+        assert result_df["status"].iloc[0] == "Success"
+
+        # Verify data was loaded
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM test_schema.ephemeral_test")
+                assert cur.fetchone()[0] == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
