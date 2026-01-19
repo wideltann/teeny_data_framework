@@ -62,12 +62,10 @@ def _(Path, psycopg):
     # Setup paths
     base_dir = Path(__file__).parent.parent
     source_dir = base_dir / "data" / "raw" / "encoding_test"
-    landing_dir = base_dir / "data" / "landing" / "encoding_test"
 
     # Create directories
     source_dir.mkdir(parents=True, exist_ok=True)
-    landing_dir.mkdir(parents=True, exist_ok=True)
-    return conn, conninfo, landing_dir, source_dir
+    return conn, conninfo, source_dir
 
 
 @app.cell
@@ -116,13 +114,12 @@ def _(mo):
 
 
 @app.cell
-def _(add_files_to_metadata_table, conninfo, landing_dir, source_dir):
+def _(add_files_to_metadata_table, conninfo, source_dir):
     # Add files to metadata with CP-1252 encoding
     metadata_df = add_files_to_metadata_table(
         conninfo=conninfo,
         schema="test_encoding",
         source_dir=str(source_dir),
-        landing_dir=str(landing_dir),
         filetype="csv",
         has_header=True,
         encoding="cp1252",  # ← Specify the encoding!
@@ -133,7 +130,7 @@ def _(add_files_to_metadata_table, conninfo, landing_dir, source_dir):
 
 @app.cell
 def _(metadata_df, mo):
-    mo.ui.table(metadata_df[['full_path', 'header', 'row_count', 'metadata_ingest_status']])
+    mo.ui.table(metadata_df[['source_path', 'header', 'row_count', 'metadata_ingest_status']])
     return
 
 
@@ -163,7 +160,7 @@ def _(mo):
 
 
 @app.cell
-def _(conninfo, landing_dir, update_table):
+def _(conninfo, source_dir, update_table):
     # Define column mapping from schema inference
     column_mapping = {
         "name": (["Name"], "string"),
@@ -178,7 +175,7 @@ def _(conninfo, landing_dir, update_table):
         schema="test_encoding",
         output_table="restaurants",
         filetype="csv",
-        landing_dir=str(landing_dir),
+        source_dir=str(source_dir),
         column_mapping=column_mapping,
         encoding="cp1252",  # ← Simply specify encoding!
         resume=True,
@@ -188,7 +185,7 @@ def _(conninfo, landing_dir, update_table):
 
 @app.cell
 def _(ingest_df, mo):
-    mo.ui.table(ingest_df[['full_path', 'status', 'ingest_runtime']])
+    mo.ui.table(ingest_df[['source_path', 'status', 'ingest_runtime']])
     return
 
 
@@ -240,20 +237,19 @@ def _(mo):
         conninfo="postgresql://user:pass@host/db",
         schema="raw",
         source_dir="data/raw/",
-        landing_dir="data/landing/",
         filetype="csv",
         encoding="cp1252",  # Specify encoding
     )
     ```
 
-    ### 2. For `update_table()` - NEW! Direct encoding parameter
+    ### 2. For `update_table()` - Direct encoding parameter
     ```python
     update_table(
         conninfo="postgresql://user:pass@host/db",
         schema="raw",
         output_table="my_table",
         filetype="csv",
-        landing_dir="data/landing/",
+        source_dir="data/raw/",
         column_mapping=column_mapping,
         encoding="cp1252",  # ← Simply specify encoding!
     )

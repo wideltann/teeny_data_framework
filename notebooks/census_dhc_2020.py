@@ -28,24 +28,20 @@ def _(Path, mo, psycopg):
     # Setup paths
     base_dir = Path(__file__).parent.parent  # Go up to project root
     source_dir = base_dir / "data" / "raw" / "census"
-    landing_dir = base_dir / "data" / "landing" / "census"
-
-    # Create directories
-    landing_dir.mkdir(parents=True, exist_ok=True)
 
     mo.md(f"""
     # 2020 Decennial Census DHC Data Ingestion
 
-    **Search dir:** `{source_dir}`
-    **Landing dir:** `{landing_dir}`
+    **Source dir:** `{source_dir}`
     **Backend:** PostgreSQL (pure psycopg)
     **Compression:** ZIP extraction enabled
+    **Cache:** Files extracted to `temp/` directory
     """)
 
     with conn.cursor() as _cur:
         _cur.execute("CREATE SCHEMA IF NOT EXISTS raw")
     conn.commit()
-    return conn, conninfo, landing_dir, mo, source_dir
+    return conn, conninfo, mo, source_dir
 
 
 @app.cell
@@ -101,14 +97,13 @@ def _():
 
 
 @app.cell
-def _(add_files_to_metadata_table, conninfo, landing_dir, source_dir):
+def _(add_files_to_metadata_table, conninfo, source_dir):
     # Extract DHC files from ZIP and add to metadata
     # DHC files are pipe-delimited (.dhc extension)
     add_files_to_metadata_table(
         conninfo=conninfo,
         schema="raw",
         source_dir=str(source_dir),
-        landing_dir=str(landing_dir),
         filetype="psv",  # Pipe-separated values
         compression_type="zip",
         archive_glob="*.dhc",  # Extract .dhc files from ZIP
@@ -120,7 +115,7 @@ def _(add_files_to_metadata_table, conninfo, landing_dir, source_dir):
 
 
 @app.cell
-def _(column_mapping, conninfo, landing_dir, update_table):
+def _(column_mapping, conninfo, source_dir, update_table):
     # Ingest the extracted DHC files
     # Derive header from column mapping keys (excluding 'default')
     def dhc_header_fn(file):
@@ -133,10 +128,10 @@ def _(column_mapping, conninfo, landing_dir, update_table):
         schema="raw",
         output_table="dhc_2020",
         filetype="psv",  # Pipe-separated values
-        sql_glob="%.dhc",  # Match .dhc files from landing directory
+        sql_glob="%.dhc",  # Match .dhc files
         column_mapping=column_mapping,
         header_fn=dhc_header_fn,
-        landing_dir=str(landing_dir),
+        source_dir=str(source_dir),
         resume=True,
     )
     return
@@ -152,8 +147,8 @@ def _(conn, mo):
         SELECT
             *
         FROM raw.metadata
-        WHERE full_path LIKE '%%census%%'
-        ORDER BY full_path
+        WHERE source_path LIKE '%%census%%'
+        ORDER BY source_path
         """,
         engine=conn,
     )

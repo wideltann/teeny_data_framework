@@ -28,24 +28,20 @@ def _(Path, mo, psycopg):
     # Setup paths
     base_dir = Path(__file__).parent.parent  # Go up to project root
     source_dir = base_dir / "data" / "raw"
-    landing_dir = base_dir / "data" / "landing"
-
-    # Create landing directory
-    landing_dir.mkdir(parents=True, exist_ok=True)
 
     mo.md(f"""
     # UCI Iris Dataset Ingestion
 
-    **Search dir:** `{source_dir}`
-    **Landing dir:** `{landing_dir}`
+    **Source dir:** `{source_dir}`
     **Backend:** PostgreSQL (pure psycopg)
     **Compression:** ZIP extraction enabled
+    **Cache:** Files extracted to `temp/` directory
     """)
 
     with conn.cursor() as cur:
         cur.execute("CREATE SCHEMA IF NOT EXISTS raw")
     conn.commit()
-    return conn, conninfo, landing_dir, mo, source_dir
+    return conn, conninfo, mo, source_dir
 
 
 @app.cell
@@ -97,7 +93,7 @@ def _():
 
 
 @app.cell
-def _(add_files_to_metadata_table, conninfo, landing_dir, source_dir):
+def _(add_files_to_metadata_table, conninfo, source_dir):
     # Extract .data files from ZIP and add to metadata
     # filetype="csv" because .data files are CSV format
     # archive_glob="*.data" specifies which files to extract from the ZIP
@@ -105,7 +101,6 @@ def _(add_files_to_metadata_table, conninfo, landing_dir, source_dir):
         conninfo=conninfo,
         schema="raw",
         source_dir=str(source_dir),
-        landing_dir=str(landing_dir),
         filetype="csv",  # The actual file format (CSV)
         compression_type="zip",
         archive_glob="*.data",  # Extract only .data files from ZIP
@@ -117,7 +112,7 @@ def _(add_files_to_metadata_table, conninfo, landing_dir, source_dir):
 
 
 @app.cell
-def _(column_mapping, conninfo, landing_dir, update_table):
+def _(column_mapping, conninfo, source_dir, update_table):
     # Ingest the extracted .data files
     # Derive header from column mapping keys
     def iris_header_fn(file):
@@ -128,10 +123,10 @@ def _(column_mapping, conninfo, landing_dir, update_table):
         schema="raw",
         output_table="iris",
         filetype="csv",  # Read as CSV format
-        sql_glob="%.data",  # Match .data files from landing directory
+        sql_glob="%.data",  # Match .data files
         column_mapping=column_mapping,
         header_fn=iris_header_fn,
-        landing_dir=str(landing_dir),
+        source_dir=str(source_dir),
         resume=True,
     )
     return
