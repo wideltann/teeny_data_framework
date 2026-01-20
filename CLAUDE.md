@@ -452,6 +452,10 @@ All notebooks are in `notebooks/` directory. **One notebook per dataset.**
 
 ## Testing
 
+### Pre-push Hook
+
+Tests run automatically on `git push` via a pre-push hook. You don't need to run tests manually before committing - just push and the hook will catch failures.
+
 ### Running the Test Suite
 
 The project has comprehensive tests using pytest and testcontainers (requires Docker/Podman):

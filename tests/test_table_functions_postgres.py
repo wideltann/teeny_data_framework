@@ -1230,14 +1230,23 @@ class TestSnakeCaseConversion:
         assert to_snake_case("") == ""
         assert to_snake_case("a") == "a"
         assert to_snake_case("A") == "a"
-        # inflection preserves underscores
-        assert to_snake_case("_") == "_"
-        assert to_snake_case("__multiple__underscores__") == "__multiple__underscores__"
+        # parameterize strips leading/trailing and collapses consecutive underscores
+        assert to_snake_case("_") == ""
+        assert to_snake_case("__multiple__underscores__") == "multiple_underscores"
 
     def test_snake_case_leading_trailing_spaces(self):
-        """Test handling of leading/trailing spaces and underscores"""
-        assert to_snake_case(" FirstName ") == "_first_name_"
-        assert to_snake_case("_firstName_") == "_first_name_"
+        """Test handling of leading/trailing spaces - parameterize strips them"""
+        assert to_snake_case(" FirstName ") == "first_name"
+        assert to_snake_case("_firstName_") == "first_name"
+
+    def test_snake_case_transliteration(self):
+        """Test that accented characters are transliterated to ASCII"""
+        assert to_snake_case("café") == "cafe"
+        assert to_snake_case("naïve") == "naive"
+        assert to_snake_case("résumé") == "resume"
+        assert to_snake_case("Müller") == "muller"
+        assert to_snake_case("niño") == "nino"
+        assert to_snake_case("Ärger") == "arger"
 
 
 class TestSchemaInference:

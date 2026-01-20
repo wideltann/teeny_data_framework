@@ -887,7 +887,6 @@ def update_table(
                         If False (default), use persistent temp/ directory.
         ... (other args unchanged)
     """
-    import time
     import tempfile
 
     # Handle ephemeral cache mode
@@ -1581,8 +1580,6 @@ def _add_files_to_metadata_table_impl(
     if not glob:
         glob = f"*.{compression_type}" if compression_type else f"*.{filetype}"
 
-    sql_glob = glob.replace("*", "%")
-
     if compression_type:
         if not archive_glob:
             archive_glob = f"*.{filetype}"
@@ -1828,15 +1825,16 @@ def to_snake_case(name: str) -> str:
         "User ID" -> "user_id"
         "price-per-unit" -> "price_per_unit"
         "totalAmount" -> "total_amount"
+        "café" -> "cafe"
     """
-    import re
     import inflection
 
-    # Replace spaces and hyphens with underscores first
-    name = re.sub(r"[\s\-]+", "_", name)
-
-    # Use inflection for the camelCase conversion
-    return inflection.underscore(name)
+    # transliterate converts accented chars to ASCII (café -> cafe)
+    # underscore handles camelCase (firstName -> first_name)
+    # parameterize handles spaces/special chars and normalizes
+    return inflection.parameterize(
+        inflection.underscore(inflection.transliterate(name)), separator="_"
+    )
 
 
 def infer_schema_from_file(
