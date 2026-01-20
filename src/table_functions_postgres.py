@@ -1260,6 +1260,10 @@ def extract_and_add_zip_files(
                 f for f in zip_ref.namelist() if fnmatch.fnmatch(f, archive_glob)
             ]
 
+            if not namelist:
+                print(f"No files matching '{archive_glob}' in {path_basename(archive_path)}, trying next archive...")
+                continue
+
             for inner_path in namelist:
                 if sample and num_processed == sample:
                     break
@@ -1267,15 +1271,15 @@ def extract_and_add_zip_files(
                 # Build source_path: archive_path::inner_path
                 source_path = f"{archive_path}::{inner_path}"
 
-                # Check if already processed
-                if resume and source_path in source_path_set:
-                    logger.debug(f"Skipped (in metadata): {source_path}")
-                    continue
-
                 num_processed += 1
                 file_num = (
                     f"{num_processed}/{sample}" if sample else f"{num_processed} |"
                 )
+
+                # Check if already processed
+                if resume and source_path in source_path_set:
+                    print(f"{file_num} Skipped (in metadata): {path_basename(inner_path)}")
+                    continue
 
                 # Get cache path for extracted file
                 cache_path = get_cache_path_from_source_path(source_path)
@@ -1291,7 +1295,7 @@ def extract_and_add_zip_files(
 
                         shutil.move(str(extracted_file), str(cache_path))
 
-                    logger.info(f"{file_num} Extracted {inner_path} to {cache_path}")
+                    print(f"{file_num} Extracted {inner_path}")
 
                     row = get_file_metadata_row(
                         source_path=source_path,
@@ -1302,7 +1306,7 @@ def extract_and_add_zip_files(
                     )
 
                 except Exception as e:
-                    logger.error(f"Failed on {inner_path} with {e}")
+                    print(f"Failed on {inner_path} with {e}")
 
                     row = get_file_metadata_row(
                         source_path=source_path,
@@ -1316,13 +1320,13 @@ def extract_and_add_zip_files(
                     # Cleanup failed files
                     if cache_path.exists():
                         cache_path.unlink()
-                        logger.debug(f"Removed bad extracted file: {inner_path}")
+                        print(f"Removed bad extracted file: {inner_path}")
 
                     if cache_path.parent.exists() and not any(
                         cache_path.parent.iterdir()
                     ):
                         cache_path.parent.rmdir()
-                        logger.debug(f"Removed empty dir: {cache_path.parent}")
+                        print(f"Removed empty dir: {cache_path.parent}")
 
                 rows.append(row)
 
@@ -1355,7 +1359,15 @@ def add_files(
     # Build set of already processed source paths for quick lookup
     source_path_set = set(source_path_list) if source_path_list else set()
 
-    logger.info(f"Processing up to {sample if sample else len(file_list)} files...")
+    # Filter out already processed files first
+    if source_path_set:
+        file_list = [f for f in file_list if str(f) not in source_path_set]
+
+    total_files_to_be_processed = sample if sample else len(file_list)
+
+    print(
+        f"Num files being processed: {total_files_to_be_processed} out of {len(file_list)} {'new files' if resume else 'total files'}"
+    )
 
     # Get filesystem if any S3 source paths involved
     fs = None
@@ -1366,11 +1378,6 @@ def add_files(
     num_processed = 0
     for i, file in enumerate(file_list):
         source_path = str(file)  # This IS the source_path (primary key)
-
-        # Check if already processed (source_path in metadata)
-        if source_path in source_path_set:
-            logger.debug(f"Skipped (in metadata): {path_basename(source_path)}")
-            continue
 
         if sample and num_processed == sample:
             break
@@ -1393,10 +1400,10 @@ def add_files(
                 encoding=encoding,
             )
 
-            logger.info(f"Processed file {num_processed}: {path_basename(source_path)}")
+            print(f"{num_processed}/{total_files_to_be_processed}")
 
         except Exception as e:
-            logger.error(f"Failed on {source_path} with {e}")
+            print(f"Failed on {source_path} with {e}")
 
             row = get_file_metadata_row(
                 source_path=source_path,
@@ -1664,7 +1671,7 @@ def _add_files_to_metadata_table_impl(
             raise Exception("Unsupported compression type")
 
     if len(rows) == 0:
-        logger.info("Did not add any files to metadata table")
+        print("Did not add any files to metadata table")
     else:
         rows_sorted = sorted(rows, key=lambda x: x["source_path"] or "")
 
@@ -1703,16 +1710,18 @@ def _add_files_to_metadata_table_impl(
             conn.commit()
 
     # Return metadata results for this source_dir
+    # Stored source_dir has trailing slash, so match with trailing slash
+    source_dir_match = normalize_path(source_dir) + "/"
     sql = f"""
         SELECT *
         FROM {output_table}
-        WHERE source_dir LIKE %s
+        WHERE source_dir = %s
         ORDER BY metadata_ingest_datetime DESC
     """
 
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (source_dir,))
+            cur.execute(sql, (source_dir_match,))
             columns = [desc[0] for desc in cur.description]
             rows = cur.fetchall()
             return pd.DataFrame(rows, columns=columns)
