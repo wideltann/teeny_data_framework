@@ -349,12 +349,12 @@ with app.setup:
     import sys
     from pathlib import Path
 
-    # Add project root to path for imports
-    sys.path.insert(0, str(Path(__file__).parent.parent))
+    # Add src directory to path for imports
+    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
     import marimo as mo
     import psycopg
-    from src.table_functions_postgres import add_files_to_metadata_table, update_table
+    from table_functions_postgres import add_files_to_metadata_table, update_table
 
 
 @app.cell
@@ -364,7 +364,7 @@ def _():
     # ...
 ```
 
-**Note:** Use `Path(__file__)` in the setup cell, not `mo.notebook_dir()` (which isn't available during setup).
+**Note:** The sys.path manipulation is needed for running notebooks as scripts (`python notebooks/notebook.py`). When running via `marimo edit/run`, the pythonpath config in pyproject.toml is also used.
 
 ### 7. Marimo Cells - Variable Naming
 

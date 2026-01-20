@@ -5,13 +5,13 @@ Pure psycopg implementation for efficient bulk loading
 
 import fnmatch
 import json
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Callable, Any
 
 import numpy as np
 import pandas as pd
 import psycopg
-from loguru import logger
 
 
 # Module-level variable to override temp directory (used for ephemeral cache)
@@ -262,18 +262,11 @@ def download_s3_file_with_cache(
     if cache_path.exists():
         cached_size = cache_path.stat().st_size
         if cached_size == s3_size:
-            logger.debug(f"Cache HIT: Using cached {cache_path.relative_to(Path.cwd())}")
             return cache_path
-        else:
-            logger.debug(f"Cache MISS: Size mismatch for {s3_path}")
-            logger.debug(f"  Cached: {cached_size} bytes, S3: {s3_size} bytes")
-    else:
-        logger.debug(f"Cache MISS: {s3_path} not in cache")
 
     # Download from S3 to cache
-    logger.info(f"Downloading {s3_path} -> {cache_path.relative_to(Path.cwd())}")
+    print(f"Downloading {s3_path} -> {cache_path.relative_to(Path.cwd())}")
     filesystem.get(s3_path, str(cache_path))
-    logger.debug(f"Cached successfully ({s3_size} bytes)")
 
     return cache_path
 
@@ -789,11 +782,9 @@ def row_count_check(
         metadata_row_count *= unpivot_row_multiplier
 
     if not metadata_row_count:
-        logger.debug("No metadata row count to compare against. Check passed.")
+        pass  # No metadata row count to compare against
     elif metadata_row_count == output_df_row_count:
-        logger.info(
-            f"Check passed {source_path}, metadata table row count {metadata_row_count} is equal to output table row count {output_df_row_count}"
-        )
+        pass  # Check passed
     else:
         raise ValueError(
             f"Check failed {source_path} since metadata table row count {metadata_row_count} is not equal to output table row count {output_df_row_count}"
@@ -822,8 +813,6 @@ def update_metadata(
             error_message = error_message[:500] + "... [truncated]"
         # if these characters are in the sql string itll break
         error_message = error_message.replace("'", "").replace("`", "")
-
-    logger.info(f"Updating metadata for {source_path}: {status}")
 
     with conn.cursor() as cur:
         cur.execute(
@@ -968,7 +957,6 @@ def _update_table_impl(
         required_params.append(column_mapping)
 
     if any(param is None for param in required_params):
-        logger.error(f"Missing required parameters: {required_params}")
         raise ValueError(
             "Required params: source_dir, filetype, column_mapping, schema, conninfo. Column mapping not required if using custom_read_fn or if using column_mapping_fn"
         )
@@ -986,8 +974,6 @@ def _update_table_impl(
             source_dir LIKE %s AND
             metadata_ingest_status = 'Success'
     """
-
-    logger.debug(f"Metadata file search query: {sql}")
 
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
@@ -1018,9 +1004,9 @@ def _update_table_impl(
     total_files_to_be_processed = sample if sample else len(file_list)
 
     if total_files_to_be_processed == 0:
-        logger.info("No files to ingest")
+        print("No files to ingest")
     else:
-        logger.info(
+        print(
             f"Output {'table' if output_table else 'schema'}: {output_table or schema} | Num files being processed: {total_files_to_be_processed} out of {len(file_list)} {'new files' if resume else 'total files'}"
         )
 
@@ -1127,11 +1113,10 @@ def _update_table_impl(
             if cleanup and is_s3_path(source_path.split("::")[0]):
                 try:
                     cache_path.unlink()
-                    logger.debug(f"Cleaned up cache file: {cache_path}")
-                except Exception as cleanup_error:
-                    logger.warning(f"Failed to cleanup cache file {cache_path}: {cleanup_error}")
+                except Exception:
+                    pass  # Ignore cleanup failures
 
-            logger.info(f"{i + 1}/{total_files_to_be_processed} Ingested {source_path}")
+            print(f"{i + 1}/{total_files_to_be_processed} Ingested {source_path}")
 
         except Exception as e:
             error_str = str(e)
@@ -1150,7 +1135,7 @@ def _update_table_impl(
             # Truncate error for printing
             if len(error_str) > 200:
                 error_str = error_str[:200] + "... [truncated]"
-            logger.error(f"Failed on {source_path} with {error_str}")
+            print(f"Failed on {source_path} with {error_str}", file=sys.stderr)
 
     # Return metadata results
     # Use '%' as default glob to match all files in source_dir
@@ -1234,7 +1219,6 @@ def extract_and_add_zip_files(
     try:
         import zipfile_deflate64 as zipfile
     except Exception:
-        logger.debug("Missing zipfile_deflate64, using zipfile")
         import zipfile
 
     import shutil
@@ -1272,7 +1256,7 @@ def extract_and_add_zip_files(
             ]
 
             if not namelist:
-                logger.info(f"No files matching '{archive_glob}' in {path_basename(archive_path)}, trying next archive...")
+                print(f"No files matching '{archive_glob}' in {path_basename(archive_path)}, trying next archive...")
                 continue
 
             for inner_path in namelist:
@@ -1289,7 +1273,7 @@ def extract_and_add_zip_files(
 
                 # Check if already processed
                 if resume and source_path in source_path_set:
-                    logger.info(f"{file_num} Skipped (in metadata): {path_basename(inner_path)}")
+                    print(f"{file_num} Skipped (in metadata): {path_basename(inner_path)}")
                     continue
 
                 # Get cache path for extracted file
@@ -1306,7 +1290,7 @@ def extract_and_add_zip_files(
 
                         shutil.move(str(extracted_file), str(cache_path))
 
-                    logger.info(f"{file_num} Extracted {source_path}")
+                    print(f"{file_num} Extracted {source_path}")
 
                     row = get_file_metadata_row(
                         source_path=source_path,
@@ -1317,7 +1301,7 @@ def extract_and_add_zip_files(
                     )
 
                 except Exception as e:
-                    logger.error(f"Failed on {inner_path} with {e}")
+                    print(f"Failed on {inner_path} with {e}", file=sys.stderr)
 
                     row = get_file_metadata_row(
                         source_path=source_path,
@@ -1331,13 +1315,11 @@ def extract_and_add_zip_files(
                     # Cleanup failed files
                     if cache_path.exists():
                         cache_path.unlink()
-                        logger.debug(f"Removed bad extracted file: {inner_path}")
 
                     if cache_path.parent.exists() and not any(
                         cache_path.parent.iterdir()
                     ):
                         cache_path.parent.rmdir()
-                        logger.debug(f"Removed empty dir: {cache_path.parent}")
 
                 rows.append(row)
 
@@ -1376,7 +1358,7 @@ def add_files(
 
     total_files_to_be_processed = sample if sample else len(file_list)
 
-    logger.info(
+    print(
         f"Num files being processed: {total_files_to_be_processed} out of {len(file_list)} {'new files' if resume else 'total files'}"
     )
 
@@ -1400,7 +1382,7 @@ def add_files(
             if is_s3_path(source_path):
                 cache_path = get_cache_path_from_source_path(source_path)
                 fs.get(source_path, str(cache_path))
-                logger.info(f"Downloaded {source_path} to {cache_path}")
+                print(f"Downloaded {source_path} to {cache_path}")
             # Local files don't need copying - get_cache_path_from_source_path returns the path as-is
 
             row = get_file_metadata_row(
@@ -1411,10 +1393,10 @@ def add_files(
                 encoding=encoding,
             )
 
-            logger.info(f"{num_processed}/{total_files_to_be_processed}")
+            print(f"{num_processed}/{total_files_to_be_processed}")
 
         except Exception as e:
-            logger.error(f"Failed on {source_path} with {e}")
+            print(f"Failed on {source_path} with {e}", file=sys.stderr)
 
             row = get_file_metadata_row(
                 source_path=source_path,
@@ -1519,7 +1501,7 @@ def get_file_metadata_row(
         row["metadata_ingest_status"] = "Success"
 
         filename = path_basename(source_path) if source_path else "unknown"
-        logger.info(
+        print(
             f"Row count: {row_count} Filename: {filename} | Runtime: {time.time() - start_time:.2f}"
         )
 
@@ -1682,7 +1664,7 @@ def _add_files_to_metadata_table_impl(
             raise Exception("Unsupported compression type")
 
     if len(rows) == 0:
-        logger.info("Did not add any files to metadata table")
+        print("Did not add any files to metadata table")
     else:
         rows_sorted = sorted(rows, key=lambda x: x["source_path"] or "")
 
@@ -1759,13 +1741,13 @@ def drop_metadata_by_source(
             )
             count_before = cur.fetchone()[0]
 
-        logger.info(f"Rows before drop: {count_before}")
+        print(f"Rows before drop: {count_before}")
 
         with conn.cursor() as cur:
             cur.execute(
                 f"DELETE FROM {schema}.metadata WHERE source_dir LIKE %s", (source_dir,)
             )
-            logger.info(f"Deleted {cur.rowcount} rows")
+            print(f"Deleted {cur.rowcount} rows")
         conn.commit()
 
         with conn.cursor() as cur:
@@ -1775,7 +1757,7 @@ def drop_metadata_by_source(
             )
             count_after = cur.fetchone()[0]
 
-        logger.info(f"Rows after drop: {count_after}")
+        print(f"Rows after drop: {count_after}")
 
 
 def drop_partition(
@@ -1790,7 +1772,7 @@ def drop_partition(
     Args:
         conninfo: PostgreSQL connection string (e.g. "postgresql://user:pass@host/db")
     """
-    logger.info(
+    print(
         f"Running: DELETE FROM {schema}.{table} WHERE source_path LIKE '{partition_key}'"
     )
 
@@ -1799,12 +1781,11 @@ def drop_partition(
             cur.execute(
                 f"DELETE FROM {schema}.{table} WHERE source_path LIKE %s", (partition_key,)
             )
-            logger.info(f"Deleted {cur.rowcount} rows")
+            print(f"Deleted {cur.rowcount} rows")
         conn.commit()
 
     # PostgreSQL doesn't need vacuum the same way Spark does
     # VACUUM reclaims storage, but happens automatically in most cases
-    logger.debug("Note: PostgreSQL autovacuum will reclaim space automatically")
 
 
 def drop_file_from_metadata_and_table(
@@ -1826,7 +1807,7 @@ def drop_file_from_metadata_and_table(
             cur.execute(
                 f"DELETE FROM {schema}.metadata WHERE source_path = %s", (source_path,)
             )
-            logger.info(f"Deleted {cur.rowcount} rows from metadata")
+            print(f"Deleted {cur.rowcount} rows from metadata")
         conn.commit()
 
     # Delete from data table
@@ -2025,7 +2006,7 @@ Examples:
 
     # Validate path exists
     if not input_path.exists():
-        logger.error(f"Path not found: {args.path}")
+        print(f"Error: Path not found: {args.path}", file=sys.stderr)
         exit(1)
 
     try:
@@ -2044,8 +2025,8 @@ Examples:
             ])
 
             if not files:
-                logger.error(f"No matching files found in {args.path}")
-                logger.error(f"Looking for extensions: {extensions}")
+                print(f"Error: No matching files found in {args.path}", file=sys.stderr)
+                print(f"Looking for extensions: {extensions}", file=sys.stderr)
                 exit(1)
 
             # Build output dictionary keyed by filename
@@ -2067,7 +2048,7 @@ Examples:
                         "column_mapping": column_mapping,
                     }
                 except Exception as e:
-                    logger.warning(f"Failed to infer schema for {file_path.name}: {e}")
+                    print(f"Warning: Failed to infer schema for {file_path.name}: {e}", file=sys.stderr)
                     output[file_path.name] = {"error": str(e)}
 
             # Output as JSON
@@ -2102,5 +2083,5 @@ Examples:
                 print(json.dumps(output))
 
     except Exception as e:
-        logger.exception(f"Error inferring schema: {e}")
+        print(f"Error inferring schema: {e}", file=sys.stderr)
         exit(1)

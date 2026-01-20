@@ -8,13 +8,13 @@ with app.setup:
     import sys
     from pathlib import Path
 
-    # Add project root to path for imports
-    sys.path.insert(0, str(Path(__file__).parent.parent))
+    # Add src directory to path for imports
+    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
     import marimo as mo
     import pandas as pd
     import psycopg
-    from src.table_functions_postgres import add_files_to_metadata_table, update_table
+    from table_functions_postgres import add_files_to_metadata_table, update_table
 
 
 @app.cell
