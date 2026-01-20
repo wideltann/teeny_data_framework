@@ -1261,7 +1261,7 @@ def extract_and_add_zip_files(
             ]
 
             if not namelist:
-                print(f"No files matching '{archive_glob}' in {path_basename(archive_path)}, trying next archive...")
+                logger.info(f"No files matching '{archive_glob}' in {path_basename(archive_path)}, trying next archive...")
                 continue
 
             for inner_path in namelist:
@@ -1278,7 +1278,7 @@ def extract_and_add_zip_files(
 
                 # Check if already processed
                 if resume and source_path in source_path_set:
-                    print(f"{file_num} Skipped (in metadata): {path_basename(inner_path)}")
+                    logger.info(f"{file_num} Skipped (in metadata): {path_basename(inner_path)}")
                     continue
 
                 # Get cache path for extracted file
@@ -1295,7 +1295,7 @@ def extract_and_add_zip_files(
 
                         shutil.move(str(extracted_file), str(cache_path))
 
-                    print(f"{file_num} Extracted {inner_path}")
+                    logger.info(f"{file_num} Extracted {source_path}")
 
                     row = get_file_metadata_row(
                         source_path=source_path,
@@ -1306,7 +1306,7 @@ def extract_and_add_zip_files(
                     )
 
                 except Exception as e:
-                    print(f"Failed on {inner_path} with {e}")
+                    logger.error(f"Failed on {inner_path} with {e}")
 
                     row = get_file_metadata_row(
                         source_path=source_path,
@@ -1320,13 +1320,13 @@ def extract_and_add_zip_files(
                     # Cleanup failed files
                     if cache_path.exists():
                         cache_path.unlink()
-                        print(f"Removed bad extracted file: {inner_path}")
+                        logger.debug(f"Removed bad extracted file: {inner_path}")
 
                     if cache_path.parent.exists() and not any(
                         cache_path.parent.iterdir()
                     ):
                         cache_path.parent.rmdir()
-                        print(f"Removed empty dir: {cache_path.parent}")
+                        logger.debug(f"Removed empty dir: {cache_path.parent}")
 
                 rows.append(row)
 
@@ -1365,7 +1365,7 @@ def add_files(
 
     total_files_to_be_processed = sample if sample else len(file_list)
 
-    print(
+    logger.info(
         f"Num files being processed: {total_files_to_be_processed} out of {len(file_list)} {'new files' if resume else 'total files'}"
     )
 
@@ -1400,10 +1400,10 @@ def add_files(
                 encoding=encoding,
             )
 
-            print(f"{num_processed}/{total_files_to_be_processed}")
+            logger.info(f"{num_processed}/{total_files_to_be_processed}")
 
         except Exception as e:
-            print(f"Failed on {source_path} with {e}")
+            logger.error(f"Failed on {source_path} with {e}")
 
             row = get_file_metadata_row(
                 source_path=source_path,
@@ -1671,7 +1671,7 @@ def _add_files_to_metadata_table_impl(
             raise Exception("Unsupported compression type")
 
     if len(rows) == 0:
-        print("Did not add any files to metadata table")
+        logger.info("Did not add any files to metadata table")
     else:
         rows_sorted = sorted(rows, key=lambda x: x["source_path"] or "")
 
