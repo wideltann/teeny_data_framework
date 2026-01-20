@@ -36,18 +36,19 @@ def _():
 @app.cell
 def _():
     import sys
-    from pathlib import Path
+    import marimo as mo
     import pandas as pd
 
-    sys.path.insert(0, str(Path(__file__).parent.parent))
+    # Add project root to path for imports
+    sys.path.insert(0, str(mo.notebook_dir().parent))
 
     import psycopg
     from src.table_functions_postgres import add_files_to_metadata_table, update_table
-    return Path, add_files_to_metadata_table, psycopg, update_table
+    return add_files_to_metadata_table, mo, pd, psycopg, update_table
 
 
 @app.cell
-def _(Path, psycopg):
+def _(mo, psycopg):
     # Connection string for all database operations
     conninfo = "postgresql://tanner@localhost:5432/postgres"
 
@@ -60,7 +61,7 @@ def _(Path, psycopg):
     conn.commit()
 
     # Setup paths
-    base_dir = Path(__file__).parent.parent
+    base_dir = mo.notebook_dir().parent
     source_dir = base_dir / "data" / "raw" / "encoding_test"
 
     # Create directories

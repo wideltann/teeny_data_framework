@@ -7,18 +7,18 @@ app = marimo.App(width="medium")
 @app.cell
 def _():
     import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-
     import marimo as mo
+
+    # Add project root to path for imports
+    sys.path.insert(0, str(mo.notebook_dir().parent))
+
     import psycopg
     from src.table_functions_postgres import add_files_to_metadata_table, update_table
-    return Path, add_files_to_metadata_table, mo, psycopg, update_table
+    return add_files_to_metadata_table, mo, psycopg, update_table
 
 
 @app.cell
-def _(Path, mo, psycopg):
+def _(mo, psycopg):
     # Connection string for all database operations
     conninfo = "postgresql://tanner@localhost:5432/postgres"
 
@@ -26,7 +26,7 @@ def _(Path, mo, psycopg):
     conn = psycopg.connect(conninfo, autocommit=False)
 
     # Setup paths
-    base_dir = Path(__file__).parent.parent  # Go up to project root
+    base_dir = mo.notebook_dir().parent  # Go up to project root
     source_dir = base_dir / "data" / "raw"
 
     mo.md(f"""
