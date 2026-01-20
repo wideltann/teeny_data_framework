@@ -261,16 +261,21 @@ add_files_to_metadata_table(
 **How it works:**
 - S3 files are downloaded to local `temp/` cache that mirrors the S3 path structure
 - Cache uses size-based validation (re-downloads only if file size changed)
-- Archives are extracted to `temp/<archive_path>/<inner_path>`
+- Downloaded archives go to `temp/archives/` to avoid conflicts with extracted contents
+- Extracted contents go to `temp/<bucket>/<archive_name>/...`
 - Metadata table stores S3 paths, making pipelines portable across machines
 
 **Cache structure:**
 ```
 temp/
+├── archives/                           # Downloaded S3 archives (separate to avoid conflicts)
+│   └── my-bucket/
+│       └── source/
+│           └── data.zip                # The actual archive file
 └── my-bucket/
     └── source/
-        ├── file.csv                    # Cached non-archive file
-        └── archive.zip/
+        ├── file.csv                    # Cached non-archive S3 file
+        └── data.zip/                   # Directory for extracted contents
             └── inner/
                 └── file.csv            # Extracted archive contents
 ```
@@ -312,12 +317,16 @@ s3://my-bucket/
 **Local cache (auto-managed, mirrors source structure):**
 ```
 temp/                 # S3 file cache
+├── archives/         # Downloaded S3 archives (kept separate)
+│   └── my-bucket/
+│       └── source/
+│           └── archive.zip
 └── my-bucket/
     └── source/
         ├── file.csv                    # Downloaded S3 files
-        └── archive.zip/
-            └── extracted/
-                └── file.csv            # Extracted contents
+        └── archive.zip/                # Extracted contents (directory)
+            └── inner/
+                └── file.csv
 ```
 
 ### 5. Running Marimo Notebooks
