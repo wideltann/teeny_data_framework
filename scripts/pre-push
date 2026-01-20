@@ -17,7 +17,7 @@ fi
 
 # Run ALL tests (not just a subset)
 export DOCKER_HOST=unix:///var/run/docker.sock
-pytest tests/ -v
+uv run pytest tests/ -v
 
 echo ""
 echo "✅ All tests passed! Proceeding with push..."
