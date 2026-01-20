@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.19.1"
+__generated_with = "0.19.2"
 app = marimo.App(width="medium")
 
 
@@ -41,7 +41,7 @@ def _(Path, mo, psycopg):
     with conn.cursor() as cur:
         cur.execute("CREATE SCHEMA IF NOT EXISTS raw")
     conn.commit()
-    return conn, conninfo, mo, source_dir
+    return conn, conninfo, source_dir
 
 
 @app.cell
@@ -127,17 +127,15 @@ def _(column_mapping, conninfo, source_dir, update_table):
         column_mapping=column_mapping,
         header_fn=iris_header_fn,
         source_dir=str(source_dir),
-        resume=True,
+        resume=False,
     )
     return
-
-
 
 
 @app.cell
 def _(conn, mo):
     _df = mo.sql(
-        """
+        f"""
         SELECT * FROM raw.iris LIMIT 20
         """,
         engine=conn

@@ -1,0 +1,113 @@
+{
+  "version": "1",
+  "metadata": {
+    "marimo_version": "0.19.2"
+  },
+  "cells": [
+    {
+      "id": "Hbol",
+      "code_hash": "f82ec2b23ab4fc0707ed32849cff3397",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "MJUe",
+      "code_hash": "6aa74f84a34f2b18d2cf305ab5e20750",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "vblA",
+      "code_hash": "a3d9cea91c0e07337db6b13ca79140c3",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h2 id=\"schema-inference-with-snake-case-conversion\">Schema Inference with Snake Case Conversion</h2>\n<span class=\"paragraph\">The CLI automatically converts column names to snake_case and tracks original names.\nThis is useful when working with files that have mixed naming conventions.</span>\n<span class=\"paragraph\"><strong>Example Usage:</strong>\n<div class=\"language-bash codehilite\"><pre><span></span><code><span class=\"c1\"># For files with headers like &quot;Sepal Length&quot;, &quot;Petal Width&quot;, &quot;Class Name&quot;</span>\npython<span class=\"w\"> </span>src/table_functions_postgres.py<span class=\"w\"> </span>data/your_file.csv<span class=\"w\"> </span>--pretty\n</code></pre></div></span>\n<span class=\"paragraph\"><strong>Output format:</strong>\n<div class=\"language-json codehilite\"><pre><span></span><code><span class=\"p\">{</span>\n<span class=\"w\">  </span><span class=\"nt\">&quot;sepal_length&quot;</span><span class=\"p\">:</span><span class=\"w\"> </span><span class=\"p\">[[</span><span class=\"s2\">&quot;Sepal Length&quot;</span><span class=\"p\">],</span><span class=\"w\"> </span><span class=\"s2\">&quot;float64&quot;</span><span class=\"p\">],</span>\n<span class=\"w\">  </span><span class=\"nt\">&quot;petal_width&quot;</span><span class=\"p\">:</span><span class=\"w\"> </span><span class=\"p\">[[</span><span class=\"s2\">&quot;Petal Width&quot;</span><span class=\"p\">],</span><span class=\"w\"> </span><span class=\"s2\">&quot;float64&quot;</span><span class=\"p\">],</span>\n<span class=\"w\">  </span><span class=\"nt\">&quot;class_name&quot;</span><span class=\"p\">:</span><span class=\"w\"> </span><span class=\"p\">[[</span><span class=\"s2\">&quot;Class Name&quot;</span><span class=\"p\">],</span><span class=\"w\"> </span><span class=\"s2\">&quot;string&quot;</span><span class=\"p\">],</span>\n<span class=\"w\">  </span><span class=\"nt\">&quot;already_snake&quot;</span><span class=\"p\">:</span><span class=\"w\"> </span><span class=\"p\">[[],</span><span class=\"w\"> </span><span class=\"s2\">&quot;string&quot;</span><span class=\"p\">]</span>\n<span class=\"p\">}</span>\n</code></pre></div></span>\n<ul>\n<li>Converts: <code>\"Sepal Length\"</code> \u2192 <code>\"sepal_length\"</code></li>\n<li>Original name stored in array: <code>[[\"Sepal Length\"], \"float64\"]</code></li>\n<li>Already snake_case gets empty array: <code>[[], \"string\"]</code></li>\n<li>Framework matches either snake_case or original name when reading files</li>\n</ul></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "bkHC",
+      "code_hash": "6055f5e0fffbf33f2570f962ef2f4da0",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "lEQa",
+      "code_hash": "f48a7a81f7342babcca519d89ba1692c",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/html": "<marimo-ui-element object-id='lEQa-0' random-id='e771ef7d-a90a-a50d-bc89-fe4077df93a2'><marimo-table data-initial-value='[]' data-label='null' data-data='&quot;[]&quot;' data-total-rows='0' data-total-columns='13' data-max-columns='50' data-banner-text='&quot;&quot;' data-pagination='true' data-page-size='10' data-field-types='[[&quot;source_path&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;source_dir&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;filesize&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;header&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;row_count&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;file_hash&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;metadata_ingest_datetime&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;metadata_ingest_status&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;ingest_datetime&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;ingest_runtime&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;status&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;error_message&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;unpivot_row_multiplier&quot;,[&quot;string&quot;,&quot;object&quot;]]]' data-show-filters='true' data-show-download='true' data-show-column-summaries='false' data-show-data-types='true' data-show-page-size-selector='false' data-show-column-explorer='true' data-show-chart-builder='true' data-row-headers='[]' data-has-stable-row-id='false' data-lazy='false' data-preload='false'></marimo-table></marimo-ui-element>"
+          }
+        }
+      ],
+      "console": [
+        {
+          "type": "stream",
+          "name": "stderr",
+          "text": "2026-01-19 14:44:12.883 | DEBUG    | src.table_functions_postgres:extract_and_add_zip_files:1189 - Missing zipfile_deflate64, using zipfile\n2026-01-19 14:44:12.888 | INFO     | src.table_functions_postgres:extract_and_add_zip_files:1258 - 1 | Extracted bezdekIris.data to /Users/tanner/syncthing/coding/teeny_data_framework/temp/Users/tanner/syncthing/coding/teeny_data_framework/data/raw/iris.zip/bezdekIris.data\n2026-01-19 14:44:12.902 | INFO     | src.table_functions_postgres:get_file_metadata_row:1468 - Row count: 150 Filename: iris.zip::bezdekIris.data | Runtime: 0.01\n2026-01-19 14:44:12.903 | INFO     | src.table_functions_postgres:extract_and_add_zip_files:1258 - 2 | Extracted iris.data to /Users/tanner/syncthing/coding/teeny_data_framework/temp/Users/tanner/syncthing/coding/teeny_data_framework/data/raw/iris.zip/iris.data\n2026-01-19 14:44:12.911 | INFO     | src.table_functions_postgres:get_file_metadata_row:1468 - Row count: 150 Filename: iris.zip::iris.data | Runtime: 0.01\n",
+          "mimetype": "text/plain"
+        }
+      ]
+    },
+    {
+      "id": "PKri",
+      "code_hash": "4aeedb42498cbcf21ad23b5be1b53898",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/html": "<marimo-ui-element object-id='PKri-0' random-id='e43d4c4b-4f77-05ac-bbaf-3d61fc0d7ebd'><marimo-table data-initial-value='[]' data-label='null' data-data='&quot;[{&#92;&quot;source_path&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/raw/iris.zip::bezdekIris.data&#92;&quot;,&#92;&quot;source_dir&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/raw/&#92;&quot;,&#92;&quot;filesize&#92;&quot;:4551,&#92;&quot;header&#92;&quot;:[&#92;&quot;5.1&#92;&quot;,&#92;&quot;3.5&#92;&quot;,&#92;&quot;1.4&#92;&quot;,&#92;&quot;0.2&#92;&quot;,&#92;&quot;Iris-setosa&#92;&quot;],&#92;&quot;row_count&#92;&quot;:150,&#92;&quot;file_hash&#92;&quot;:&#92;&quot;7352471c39afdf2dad640df6dd867b72&#92;&quot;,&#92;&quot;metadata_ingest_datetime&#92;&quot;:&#92;&quot;2026-01-19 14:44:12&#92;&quot;,&#92;&quot;metadata_ingest_status&#92;&quot;:&#92;&quot;Success&#92;&quot;,&#92;&quot;ingest_datetime&#92;&quot;:&#92;&quot;2026-01-19 14:45:06&#92;&quot;,&#92;&quot;ingest_runtime&#92;&quot;:0,&#92;&quot;status&#92;&quot;:&#92;&quot;Success&#92;&quot;,&#92;&quot;error_message&#92;&quot;:null,&#92;&quot;unpivot_row_multiplier&#92;&quot;:null},{&#92;&quot;source_path&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/raw/iris.zip::iris.data&#92;&quot;,&#92;&quot;source_dir&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/raw/&#92;&quot;,&#92;&quot;filesize&#92;&quot;:4551,&#92;&quot;header&#92;&quot;:[&#92;&quot;5.1&#92;&quot;,&#92;&quot;3.5&#92;&quot;,&#92;&quot;1.4&#92;&quot;,&#92;&quot;0.2&#92;&quot;,&#92;&quot;Iris-setosa&#92;&quot;],&#92;&quot;row_count&#92;&quot;:150,&#92;&quot;file_hash&#92;&quot;:&#92;&quot;42615765a885ddf54427f12c34a0a070&#92;&quot;,&#92;&quot;metadata_ingest_datetime&#92;&quot;:&#92;&quot;2026-01-19 14:44:12&#92;&quot;,&#92;&quot;metadata_ingest_status&#92;&quot;:&#92;&quot;Success&#92;&quot;,&#92;&quot;ingest_datetime&#92;&quot;:&#92;&quot;2026-01-19 14:45:06&#92;&quot;,&#92;&quot;ingest_runtime&#92;&quot;:0,&#92;&quot;status&#92;&quot;:&#92;&quot;Success&#92;&quot;,&#92;&quot;error_message&#92;&quot;:null,&#92;&quot;unpivot_row_multiplier&#92;&quot;:null}]&quot;' data-total-rows='2' data-total-columns='13' data-max-columns='50' data-banner-text='&quot;&quot;' data-pagination='true' data-page-size='10' data-field-types='[[&quot;source_path&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;source_dir&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;filesize&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;header&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;row_count&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;file_hash&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;metadata_ingest_datetime&quot;,[&quot;datetime&quot;,&quot;datetime64[ns]&quot;]],[&quot;metadata_ingest_status&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;ingest_datetime&quot;,[&quot;datetime&quot;,&quot;datetime64[ns]&quot;]],[&quot;ingest_runtime&quot;,[&quot;integer&quot;,&quot;int64&quot;]],[&quot;status&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;error_message&quot;,[&quot;string&quot;,&quot;object&quot;]],[&quot;unpivot_row_multiplier&quot;,[&quot;string&quot;,&quot;object&quot;]]]' data-show-filters='true' data-show-download='true' data-show-column-summaries='false' data-show-data-types='true' data-show-page-size-selector='false' data-show-column-explorer='true' data-show-chart-builder='true' data-row-headers='[]' data-has-stable-row-id='false' data-lazy='false' data-preload='false'></marimo-table></marimo-ui-element>"
+          }
+        }
+      ],
+      "console": [
+        {
+          "type": "stream",
+          "name": "stderr",
+          "text": "2026-01-19 14:45:06.084 | DEBUG    | src.table_functions_postgres:_update_table_impl:947 - Metadata file search query: \n        SELECT source_path\n        FROM raw.metadata\n        WHERE\n            source_dir LIKE %s AND\n            metadata_ingest_status = 'Success'\n    \n2026-01-19 14:45:06.093 | INFO     | src.table_functions_postgres:_update_table_impl:977 - Output table: iris | Num files being processed: 2 out of 2 total files\n{'record': {'elapsed': 'PT87.957896S', 'exception': None, 'extra': {}, 'file': {'name': 'table_functions_postgres.py', 'path': '/Users/tanner/syncthing/coding/teeny_data_framework/src/table_functions_postgres.py'}, 'function': 'row_count_check', 'level': {'icon': '\u2139\ufe0f', 'name': 'INFO', 'no': 20}, 'line': 756, 'message': 'Check passed /Users/tanner/syncthing/coding/teeny_data_framework/data/raw/iris.zip::bezdekIris.data, metadata table row count 150 is equal to output table row count 150', 'module': 'table_functions_postgres', 'name': 'src.table_functions_postgres', 'process': {'id': 68292, 'name': 'Process-1'}, 'thread': {'id': 8641834048, 'name': 'MainThread'}, 'time': {}}}2026-01-19 14:45:06.116 | INFO     | src.table_functions_postgres:update_metadata:788 - Updating metadata for /Users/tanner/syncthing/coding/teeny_data_framework/data/raw/iris.zip::bezdekIris.data: Success\n2026-01-19 14:45:06.122 | INFO     | src.table_functions_postgres:row_count_check:756 - Check passed /Users/tanner/syncthing/coding/teeny_data_framework/data/raw/iris.zip::iris.data, metadata table row count 150 is equal to output table row count 150\n{'record': {'elapsed': 'PT87.991506S', 'exception': None, 'extra': {}, 'file': {'name': 'table_functions_postgres.py', 'path': '/Users/tanner/syncthing/coding/teeny_data_framework/src/table_functions_postgres.py'}, 'function': 'update_metadata', 'level': {'icon': '\u2139\ufe0f', 'name': 'INFO', 'no': 20}, 'line': 788, 'message': 'Updating metadata for /Users/tanner/syncthing/coding/teeny_data_framework/data/raw/iris.zip::iris.data: Success', 'module': 'table_functions_postgres', 'name': 'src.table_functions_postgres', 'process': {'id': 68292, 'name': 'Process-1'}, 'thread': {'id': 8641834048, 'name': 'MainThread'}, 'time': {}}}",
+          "mimetype": "text/plain"
+        }
+      ]
+    },
+    {
+      "id": "Xref",
+      "code_hash": "84a2a60c2a44618c0c7f4d6910a74909",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/html": "<marimo-ui-element object-id='Xref-0' random-id='fc0a31d7-5087-a0fa-6dbc-e1ac43ef1901'><marimo-table data-initial-value='[]' data-label='null' data-data='&quot;[{&#92;&quot;sepal_length&#92;&quot;:5.1,&#92;&quot;sepal_width&#92;&quot;:3.5,&#92;&quot;petal_length&#92;&quot;:1.4,&#92;&quot;petal_width&#92;&quot;:0.2,&#92;&quot;class&#92;&quot;:&#92;&quot;Iris-setosa&#92;&quot;,&#92;&quot;full_path&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/landing/iris/bezdekIris.data&#92;&quot;},{&#92;&quot;sepal_length&#92;&quot;:4.9,&#92;&quot;sepal_width&#92;&quot;:3.0,&#92;&quot;petal_length&#92;&quot;:1.4,&#92;&quot;petal_width&#92;&quot;:0.2,&#92;&quot;class&#92;&quot;:&#92;&quot;Iris-setosa&#92;&quot;,&#92;&quot;full_path&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/landing/iris/bezdekIris.data&#92;&quot;},{&#92;&quot;sepal_length&#92;&quot;:4.7,&#92;&quot;sepal_width&#92;&quot;:3.2,&#92;&quot;petal_length&#92;&quot;:1.3,&#92;&quot;petal_width&#92;&quot;:0.2,&#92;&quot;class&#92;&quot;:&#92;&quot;Iris-setosa&#92;&quot;,&#92;&quot;full_path&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/landing/iris/bezdekIris.data&#92;&quot;},{&#92;&quot;sepal_length&#92;&quot;:4.6,&#92;&quot;sepal_width&#92;&quot;:3.1,&#92;&quot;petal_length&#92;&quot;:1.5,&#92;&quot;petal_width&#92;&quot;:0.2,&#92;&quot;class&#92;&quot;:&#92;&quot;Iris-setosa&#92;&quot;,&#92;&quot;full_path&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/landing/iris/bezdekIris.data&#92;&quot;},{&#92;&quot;sepal_length&#92;&quot;:5.0,&#92;&quot;sepal_width&#92;&quot;:3.6,&#92;&quot;petal_length&#92;&quot;:1.4,&#92;&quot;petal_width&#92;&quot;:0.2,&#92;&quot;class&#92;&quot;:&#92;&quot;Iris-setosa&#92;&quot;,&#92;&quot;full_path&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/landing/iris/bezdekIris.data&#92;&quot;},{&#92;&quot;sepal_length&#92;&quot;:5.4,&#92;&quot;sepal_width&#92;&quot;:3.9,&#92;&quot;petal_length&#92;&quot;:1.7,&#92;&quot;petal_width&#92;&quot;:0.4,&#92;&quot;class&#92;&quot;:&#92;&quot;Iris-setosa&#92;&quot;,&#92;&quot;full_path&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/landing/iris/bezdekIris.data&#92;&quot;},{&#92;&quot;sepal_length&#92;&quot;:4.6,&#92;&quot;sepal_width&#92;&quot;:3.4,&#92;&quot;petal_length&#92;&quot;:1.4,&#92;&quot;petal_width&#92;&quot;:0.3,&#92;&quot;class&#92;&quot;:&#92;&quot;Iris-setosa&#92;&quot;,&#92;&quot;full_path&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/landing/iris/bezdekIris.data&#92;&quot;},{&#92;&quot;sepal_length&#92;&quot;:5.0,&#92;&quot;sepal_width&#92;&quot;:3.4,&#92;&quot;petal_length&#92;&quot;:1.5,&#92;&quot;petal_width&#92;&quot;:0.2,&#92;&quot;class&#92;&quot;:&#92;&quot;Iris-setosa&#92;&quot;,&#92;&quot;full_path&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/landing/iris/bezdekIris.data&#92;&quot;},{&#92;&quot;sepal_length&#92;&quot;:4.4,&#92;&quot;sepal_width&#92;&quot;:2.9,&#92;&quot;petal_length&#92;&quot;:1.4,&#92;&quot;petal_width&#92;&quot;:0.2,&#92;&quot;class&#92;&quot;:&#92;&quot;Iris-setosa&#92;&quot;,&#92;&quot;full_path&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/landing/iris/bezdekIris.data&#92;&quot;},{&#92;&quot;sepal_length&#92;&quot;:4.9,&#92;&quot;sepal_width&#92;&quot;:3.1,&#92;&quot;petal_length&#92;&quot;:1.5,&#92;&quot;petal_width&#92;&quot;:0.1,&#92;&quot;class&#92;&quot;:&#92;&quot;Iris-setosa&#92;&quot;,&#92;&quot;full_path&#92;&quot;:&#92;&quot;/Users/tanner/syncthing/coding/teeny_data_framework/data/landing/iris/bezdekIris.data&#92;&quot;}]&quot;' data-total-rows='20' data-total-columns='6' data-max-columns='50' data-banner-text='&quot;&quot;' data-pagination='true' data-page-size='10' data-field-types='[[&quot;sepal_length&quot;,[&quot;number&quot;,&quot;f64&quot;]],[&quot;sepal_width&quot;,[&quot;number&quot;,&quot;f64&quot;]],[&quot;petal_length&quot;,[&quot;number&quot;,&quot;f64&quot;]],[&quot;petal_width&quot;,[&quot;number&quot;,&quot;f64&quot;]],[&quot;class&quot;,[&quot;string&quot;,&quot;str&quot;]],[&quot;full_path&quot;,[&quot;string&quot;,&quot;str&quot;]]]' data-show-filters='true' data-show-download='true' data-show-column-summaries='true' data-show-data-types='true' data-show-page-size-selector='true' data-show-column-explorer='true' data-show-chart-builder='true' data-row-headers='[]' data-has-stable-row-id='false' data-lazy='false' data-preload='false'></marimo-table></marimo-ui-element>"
+          }
+        }
+      ],
+      "console": []
+    }
+  ]
+}
