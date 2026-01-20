@@ -18,10 +18,10 @@ python table_functions.py <file_path> --pretty
 python table_functions.py <directory_path> --pretty
 
 # Examples
-python table_functions.py data/raw/my_file.csv --pretty
-python table_functions.py data/raw/my_file.psv --filetype psv --pretty
-python table_functions.py data/raw/my_file.data --no-header --pretty
-python table_functions.py data/raw/earthquakes/ --pretty  # All files in dir
+python table_functions.py data/my_file.csv --pretty
+python table_functions.py data/my_file.psv --filetype psv --pretty
+python table_functions.py data/my_file.data --no-header --pretty
+python table_functions.py data/earthquakes/ --pretty  # All files in dir
 ```
 
 ### CLI Options
@@ -38,7 +38,7 @@ python table_functions.py data/raw/earthquakes/ --pretty  # All files in dir
 
 ```bash
 # 1. Run CLI to infer schema
-python table_functions.py data/raw/earthquakes.csv --pretty
+python table_functions.py data/earthquakes.csv --pretty
 
 # 2. Copy the JSON output and paste as column_mapping in your notebook:
 column_mapping = {
@@ -98,7 +98,7 @@ The CLI output is designed for easy multi-file ingestion with dynamic mappings:
 
 ```python
 # 1. Run CLI on directory
-# python table_functions.py data/raw/my_files/ --pretty > schema.json
+# python table_functions.py data/my_files/ --pretty > schema.json
 
 # 2. Paste output as all_mappings dict
 all_mappings = {
@@ -125,7 +125,7 @@ update_table(
     schema="raw",
     output_table="unused",  # ignored when using output_table_naming_fn
     filetype="csv",
-    source_dir="data/raw/my_files/",
+    source_dir="data/my_files/",
     column_mapping_fn=get_column_mapping,
     output_table_naming_fn=get_table_name,
 )
@@ -234,7 +234,7 @@ with open('file.csv', 'rb') as f:
     print(result['encoding'])  # e.g., 'Windows-1252'
 ```
 
-See `encoding_example.py` for a complete demo.
+See `example_encoding.py` for a complete demo.
 
 ### 3. S3 Support
 
@@ -301,17 +301,15 @@ Or set `AWS_PROFILE=my-profile` environment variable.
 **Source files can be local or S3:**
 ```
 # Local source example
-data/
-└── source/           # Immutable source files
-    ├── census/       # Census DHC ZIP files
-    ├── earthquakes/  # Earthquake CSVs
-    └── iris.zip      # UCI Iris dataset
+data/                 # Immutable source files
+├── census/           # Census DHC ZIP files
+├── earthquakes/      # Earthquake CSVs
+└── iris.zip          # UCI Iris dataset
 
 # S3 source example
-s3://my-bucket/
-└── source/           # Immutable source files (never modified)
-    ├── census/
-    └── earthquakes/
+s3://my-bucket/data/  # Immutable source files (never modified)
+├── census/
+└── earthquakes/
 ```
 
 **Local cache (auto-managed, mirrors source structure):**
@@ -319,10 +317,10 @@ s3://my-bucket/
 temp/                 # S3 file cache
 ├── archives/         # Downloaded S3 archives (kept separate)
 │   └── my-bucket/
-│       └── source/
+│       └── data/
 │           └── archive.zip
 └── my-bucket/
-    └── source/
+    └── data/
         ├── file.csv                    # Downloaded S3 files
         └── archive.zip/                # Extracted contents (directory)
             └── inner/
@@ -333,7 +331,7 @@ temp/                 # S3 file cache
 
 Marimo notebooks can be run as Python scripts:
 ```bash
-python iris_dataset.py
+python example_iris_dataset.py
 ```
 
 ### 6. Marimo Setup Cell Pattern
@@ -466,16 +464,16 @@ Quick reference for `update_table()` optional parameters:
 2. **Don't** use non-prefixed variables across multiple marimo cells
 3. **Don't** forget to escape `%` as `%%` in marimo SQL queries
 4. **Don't** assume DHC columns are numeric - they're text, cast in queries
-5. **Don't** create new data directories - use existing `data/source/` structure
+5. **Don't** create new data directories - use existing `data/` structure
 6. **Don't** add helper functions that wrap simple shell commands - users can just run `rm -rf temp/` or `ls temp/` themselves. Avoid unnecessary abstraction.
 
 ## Example Notebooks
 
 Example marimo notebooks at the top level. **One notebook per dataset.**
 
-- `census_dhc_2020.py` - 2020 Census DHC data ingestion
-- `iris_dataset.py` - UCI Iris dataset
-- `encoding_example.py` - Working with non-UTF-8 encodings
+- `example_census_dhc_2020.py` - 2020 Census DHC data ingestion
+- `example_encoding.py` - Working with non-UTF-8 encodings
+- `example_iris_dataset.py` - UCI Iris dataset
 
 ## Testing
 
@@ -517,7 +515,7 @@ pytest tests/test_table_functions.py::TestPathUtilities -v
 Reset database and test:
 ```bash
 psql -U tanner -d postgres -c "DROP SCHEMA IF EXISTS raw CASCADE; CREATE SCHEMA raw;"
-python iris_dataset.py
+python example_iris_dataset.py
 ```
 
 Check results:

@@ -4056,5 +4056,241 @@ class TestEphemeralCache:
                 assert cur.fetchone()[0] == 1
 
 
+# ===== S3 SUPPORT TESTS =====
+# (Merged from test_s3_support.py)
+
+
+class TestS3HelperFunctions:
+    """Test S3 helper functions"""
+
+    def test_is_s3_path_with_s3_url(self):
+        """Test is_s3_path returns True for S3 URLs"""
+        assert is_s3_path("s3://bucket/path/to/file.csv") is True
+        assert is_s3_path("s3://my-bucket/") is True
+
+    def test_is_s3_path_with_local_path(self):
+        """Test is_s3_path returns False for local paths"""
+        assert is_s3_path("/local/path/file.csv") is False
+        assert is_s3_path("data/raw/file.csv") is False
+        assert is_s3_path(Path("/local/path")) is False
+
+    def test_get_s3_filesystem_returns_passed(self):
+        """Test get_s3_filesystem returns passed filesystem"""
+        mock_fs = MagicMock()
+        result = get_s3_filesystem(mock_fs)
+        assert result is mock_fs
+
+    def test_get_s3_filesystem_creates_new(self):
+        """Test get_s3_filesystem creates new filesystem if not provided"""
+        import s3fs
+        result = get_s3_filesystem(None)
+        assert isinstance(result, s3fs.S3FileSystem)
+
+
+class TestS3GetFileMetadataRow:
+    """Test get_file_metadata_row with S3 schema"""
+
+    def test_metadata_from_local_file(self, temp_dir):
+        """Test getting metadata from local file"""
+
+        # Create temp CSV file
+        temp_file = temp_dir / "test_meta.csv"
+        temp_file.write_text("col1,col2\nval1,val2\nval3,val4\n")
+
+        # Call function with new schema - source_path is the local path
+        result = get_file_metadata_row(
+            source_path=temp_file.as_posix(),
+            source_dir=str(temp_dir) + "/",
+            filetype="csv",
+            has_header=True,
+            error_message=None,
+            encoding="utf-8",
+        )
+
+        # Assertions
+        assert result["metadata_ingest_status"] == "Success"
+        assert result["source_path"] == temp_file.as_posix()
+        assert result["header"] == ["col1", "col2"]
+        assert result["row_count"] == 2
+        assert result["file_hash"] is not None
+        assert result["filesize"] == temp_file.stat().st_size
+
+    def test_metadata_with_error_message(self):
+        """Test that error message prevents processing"""
+
+        result = get_file_metadata_row(
+            source_path="nonexistent.csv",
+            source_dir="data/raw/",
+            filetype="csv",
+            has_header=True,
+            error_message="Test error",
+            encoding="utf-8",
+        )
+
+        # Assertions
+        assert result["metadata_ingest_status"] == "Failure"
+        assert result["error_message"] == "Test error"
+        assert result["header"] is None
+        assert result["row_count"] is None
+        assert result["file_hash"] is None
+
+
+class TestS3AddFilesWithS3:
+    """Test add_files function with S3"""
+
+    def test_add_files_local(self, temp_dir):
+        """Test adding local files"""
+
+        # Create temp file
+        test_file = temp_dir / "test_add.csv"
+        test_file.write_text("col1,col2\n1,2\n")
+
+        # Call function - now uses source_path_list, no landing_dir
+        result = add_files(
+            source_dir=str(temp_dir) + "/",
+            resume=False,
+            sample=None,
+            file_list=[str(test_file)],
+            filetype="csv",
+            has_header=True,
+            source_path_list=[],
+            encoding="utf-8",
+        )
+
+        # Assertions
+        assert len(result) == 1
+        assert result[0]["metadata_ingest_status"] == "Success"
+        assert result[0]["source_path"] == test_file.as_posix()
+
+
+class TestS3PersistentCaching:
+    """Test persistent S3 caching functions"""
+
+    def test_get_persistent_temp_dir_creates_directory(self, temp_dir):
+        """Test that get_persistent_temp_dir creates temp/ in cwd"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+            result = get_persistent_temp_dir()
+            assert result.exists()
+            assert result.name == "temp"
+            # Use resolve() to handle symlinks (macOS /var -> /private/var)
+            assert result.parent.resolve() == Path(temp_dir).resolve()
+        finally:
+            os.chdir(original_cwd)
+
+    def test_get_persistent_temp_dir_idempotent(self, temp_dir):
+        """Test that calling get_persistent_temp_dir multiple times is safe"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+            result1 = get_persistent_temp_dir()
+            result2 = get_persistent_temp_dir()
+            assert result1 == result2
+            assert result1.exists()
+        finally:
+            os.chdir(original_cwd)
+
+    def test_get_cache_path_from_s3_simple(self, temp_dir):
+        """Test converting S3 path to cache path"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+            result = get_cache_path_from_s3("s3://my-bucket/data/file.csv")
+            expected = Path(temp_dir).resolve() / "temp" / "my-bucket" / "data" / "file.csv"
+            assert result.resolve() == expected
+        finally:
+            os.chdir(original_cwd)
+
+    def test_get_cache_path_from_s3_nested(self, temp_dir):
+        """Test converting nested S3 path to cache path"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+            result = get_cache_path_from_s3("s3://bucket/a/b/c/d/file.zip")
+            expected = Path(temp_dir).resolve() / "temp" / "bucket" / "a" / "b" / "c" / "d" / "file.zip"
+            assert result.resolve() == expected
+        finally:
+            os.chdir(original_cwd)
+
+    def test_get_cache_path_from_s3_creates_parents(self, temp_dir):
+        """Test that get_cache_path_from_s3 creates parent directories"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+            result = get_cache_path_from_s3("s3://bucket/nested/path/file.csv")
+            # Parent directories should be created
+            assert result.parent.exists()
+            expected_parent = Path(temp_dir).resolve() / "temp" / "bucket" / "nested" / "path"
+            assert result.parent.resolve() == expected_parent
+        finally:
+            os.chdir(original_cwd)
+
+
+class TestS3GetCachePathFromSourcePath:
+    """Test the get_cache_path_from_source_path function"""
+
+    def test_s3_simple_file(self, temp_dir):
+        """Test S3 file without archive"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+            result = get_cache_path_from_source_path("s3://bucket/path/file.csv")
+            expected = Path(temp_dir).resolve() / "temp" / "bucket" / "path" / "file.csv"
+            assert result.resolve() == expected
+        finally:
+            os.chdir(original_cwd)
+
+    def test_s3_archive_with_inner_path(self, temp_dir):
+        """Test S3 archive with :: delimiter"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+            result = get_cache_path_from_source_path("s3://bucket/archive.zip::inner/file.csv")
+            expected = Path(temp_dir).resolve() / "temp" / "bucket" / "archive.zip" / "inner" / "file.csv"
+            assert result.resolve() == expected
+        finally:
+            os.chdir(original_cwd)
+
+    def test_local_file_returned_as_is(self, temp_dir):
+        """Test local file path is returned unchanged"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+            result = get_cache_path_from_source_path("/local/path/file.csv")
+            assert result == Path("/local/path/file.csv")
+        finally:
+            os.chdir(original_cwd)
+
+    def test_local_archive_with_inner_path(self, temp_dir):
+        """Test local archive with :: delimiter"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+            result = get_cache_path_from_source_path("/local/archive.zip::inner/file.csv")
+            expected = Path(temp_dir).resolve() / "temp" / "local" / "archive.zip" / "inner" / "file.csv"
+            assert result.resolve() == expected
+        finally:
+            os.chdir(original_cwd)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

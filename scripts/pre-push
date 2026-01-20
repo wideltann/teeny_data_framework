@@ -1,0 +1,23 @@
+#!/bin/bash
+# Pre-push hook: Run ALL tests before pushing to remote
+
+set -e  # Exit immediately on any error
+
+echo "🧪 Running tests before push..."
+echo ""
+
+# Check if Podman is running (required for container tests)
+if ! podman info > /dev/null 2>&1; then
+    echo "❌ Podman is not running!"
+    echo "Container tests require Podman. Start it with: podman machine start"
+    echo ""
+    echo "Push aborted."
+    exit 1
+fi
+
+# Run ALL tests (not just a subset)
+export DOCKER_HOST=unix:///var/run/docker.sock
+pytest tests/ -v
+
+echo ""
+echo "✅ All tests passed! Proceeding with push..."
