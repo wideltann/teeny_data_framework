@@ -419,6 +419,81 @@ update_table(
 )
 ```
 
+### Multi-File Ingestion Workflow
+
+For ingesting multiple files with different schemas into separate tables, use the CLI to infer schemas and then use dynamic functions:
+
+```bash
+# 1. Run CLI on directory to get all schemas
+python src/table_functions_postgres.py data/raw/my_files/ --pretty
+```
+
+Output format (keyed by filename with table_name and column_mapping):
+```json
+{
+  "SalesData.csv": {
+    "table_name": "sales_data",
+    "column_mapping": {
+      "date": [[], "datetime"],
+      "amount": [[], "float"],
+      "customer_id": [["customerId"], "int"]
+    }
+  },
+  "customers.csv": {
+    "table_name": "customers",
+    "column_mapping": {
+      "name": [[], "string"],
+      "email": [[], "string"]
+    }
+  }
+}
+```
+
+```python
+# 2. Paste CLI output directly as all_mappings
+all_mappings = {
+    "SalesData.csv": {
+        "table_name": "sales_data",
+        "column_mapping": {
+            "date": [[], "datetime"],
+            "amount": [[], "float"],
+            "customer_id": [["customerId"], "int"],
+        }
+    },
+    "customers.csv": {
+        "table_name": "customers",
+        "column_mapping": {
+            "name": [[], "string"],
+            "email": [[], "string"],
+        }
+    },
+}
+
+# 3. Define lookup functions
+def get_column_mapping(file_path):
+    return all_mappings[file_path.name]["column_mapping"]
+
+def get_table_name(file_path):
+    return all_mappings[file_path.name]["table_name"]
+
+# 4. Single update_table() call for all files
+update_table(
+    conninfo="postgresql://user:pass@host/db",
+    schema="raw",
+    output_table="unused",  # ignored when using output_table_naming_fn
+    filetype="csv",
+    source_dir="data/raw/my_files/",
+    column_mapping_fn=get_column_mapping,
+    output_table_naming_fn=get_table_name,
+)
+```
+
+This pattern gives you:
+- **Automatic schema inference** via CLI
+- **Snake_case table names** derived from filenames
+- **Column name normalization** (e.g., `customerId` → `customer_id`)
+- **Single function call** to ingest all files into their respective tables
+
 ### File List Filtering
 
 Filter which files to process:
