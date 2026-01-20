@@ -404,8 +404,64 @@ add_files_to_metadata_table(
     has_header=False,  # Required for accurate row count validation
     encoding="utf-8",
     resume=False,
+    expected_archive_file_count=20,  # Optional: enables archive-level skip on resume
 )
 ```
+
+### Archive-Level Resume (Skipping Entire Archives)
+
+When processing many archives with `resume=True`, the framework normally opens each archive to check which files have been processed. For large S3 archives, this can be slow.
+
+The `expected_archive_file_count` parameter enables **archive-level skipping**:
+
+```python
+# First run: processes all archives, tracks completion in archive_metadata table
+add_files_to_metadata_table(
+    conninfo="postgresql://user:pass@host/db",
+    schema="raw",
+    source_dir="s3://my-bucket/data/",
+    filetype="csv",
+    compression_type="zip",
+    archive_glob="*.csv",
+    expected_archive_file_count=20,  # Expected files per archive
+    resume=False,
+)
+
+# Second run: skips completed archives entirely (no download, no opening)
+add_files_to_metadata_table(
+    conninfo="postgresql://user:pass@host/db",
+    schema="raw",
+    source_dir="s3://my-bucket/data/",
+    filetype="csv",
+    compression_type="zip",
+    archive_glob="*.csv",
+    expected_archive_file_count=20,
+    resume=True,  # Completed archives are skipped entirely
+)
+```
+
+**How it works:**
+- Creates `{schema}.archive_metadata` table to track archive completion
+- After processing, archives with `processed_file_count >= expected_archive_file_count` are marked `Success`
+- On `resume=True`, archives with `status='Success'` are filtered out before any downloads
+- Archives with `status='Partial'` are still processed (allows incremental extraction)
+
+**archive_metadata table schema:**
+| Column | Type | Description |
+|--------|------|-------------|
+| archive_path | TEXT (PK) | Full path to the archive |
+| source_dir | TEXT | Source directory |
+| expected_file_count | INTEGER | User-provided expected count |
+| processed_file_count | INTEGER | Actual files processed |
+| status | TEXT | 'Success' or 'Partial' |
+| ingest_datetime | TIMESTAMP | When processed |
+
+**When to use:**
+- Processing many large archives from S3
+- You know the expected file count per archive
+- You want fast resume without re-downloading/opening completed archives
+
+**Without `expected_archive_file_count`:** Resume still works at file-level (opens archives but skips individual files already in metadata).
 
 **Why `has_header` matters:** The metadata table stores a raw line count (`row_count`) for each file. During `update_table()`, this count is compared against the DataFrame row count to catch cases where pandas silently drops or misparses rows. To get an accurate line count, the framework needs to know whether to subtract 1 for a header row.
 
