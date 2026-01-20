@@ -798,6 +798,7 @@ def update_metadata(
     error_message: Optional[str] = None,
     unpivot_row_multiplier: Optional[int] = None,
     ingest_runtime: Optional[int] = None,
+    output_table: Optional[str] = None,
 ) -> None:
     """
     Update metadata table with ingestion status and runtime
@@ -823,7 +824,8 @@ def update_metadata(
                 status = %s,
                 error_message = %s,
                 unpivot_row_multiplier = %s,
-                ingest_runtime = %s
+                ingest_runtime = %s,
+                output_table = %s
             WHERE source_path = %s
             """,
             (
@@ -832,6 +834,7 @@ def update_metadata(
                 error_message,
                 unpivot_row_multiplier,
                 ingest_runtime,
+                output_table,
                 source_path,
             ),
         )
@@ -1026,6 +1029,9 @@ def _update_table_impl(
             has_header = False
 
         unpivot_row_multiplier = None
+        table_name = (
+            output_table_naming_fn(Path(cache_path)) if output_table_naming_fn else output_table
+        )
         try:
             if custom_read_fn:
                 df = custom_read_fn(full_path=str(cache_path))
@@ -1077,11 +1083,6 @@ def _update_table_impl(
 
             df["source_path"] = source_path
 
-            # Write to PostgreSQL
-            table_name = (
-                output_table_naming_fn(Path(cache_path)) if output_table_naming_fn else output_table
-            )
-
             # Fresh connection for write operations
             with psycopg.connect(conninfo) as conn:
                 # Check if table exists and delete existing records for this file
@@ -1106,6 +1107,7 @@ def _update_table_impl(
                     schema=metadata_schema,
                     unpivot_row_multiplier=unpivot_row_multiplier,
                     ingest_runtime=ingest_runtime,
+                    output_table=f"{schema}.{table_name}",
                 )
                 conn.commit()
 
@@ -1116,10 +1118,14 @@ def _update_table_impl(
                 except Exception:
                     pass  # Ignore cleanup failures
 
-            print(f"{i + 1}/{total_files_to_be_processed} Ingested {source_path}")
+            print(f"{i + 1}/{total_files_to_be_processed} Ingested {source_path} -> {schema}.{table_name}")
 
         except Exception as e:
             error_str = str(e)
+
+            # Schema mismatches should fail hard - user needs to fix the table or column_mapping
+            if "Schema mismatch" in error_str:
+                raise
 
             # Fresh connection for error metadata update
             with psycopg.connect(conninfo) as conn:
@@ -1129,6 +1135,7 @@ def _update_table_impl(
                     schema=metadata_schema,
                     error_message=error_str,
                     unpivot_row_multiplier=unpivot_row_multiplier,
+                    output_table=f"{schema}.{table_name}" if table_name else None,
                 )
                 conn.commit()
 
@@ -1629,7 +1636,8 @@ def _add_files_to_metadata_table_impl(
                     ingest_runtime INTEGER,
                     status TEXT,
                     error_message TEXT,
-                    unpivot_row_multiplier INTEGER
+                    unpivot_row_multiplier INTEGER,
+                    output_table TEXT
                 )
             """
             with conn.cursor() as cur:

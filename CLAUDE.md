@@ -411,11 +411,15 @@ add_files_to_metadata_table(
     filetype="csv",  # or "psv" for pipe-delimited
     compression_type="zip",
     archive_glob="*.csv",
-    has_header=False,
+    has_header=False,  # Required for accurate row count validation
     encoding="utf-8",
     resume=False,
 )
+```
 
+**Why `has_header` matters:** The metadata table stores a raw line count (`row_count`) for each file. During `update_table()`, this count is compared against the DataFrame row count to catch cases where pandas silently drops or misparses rows. To get an accurate line count, the framework needs to know whether to subtract 1 for a header row.
+
+```python
 # Step 2: Ingest files into target table
 update_table(
     conninfo="postgresql://user:pass@host/db",

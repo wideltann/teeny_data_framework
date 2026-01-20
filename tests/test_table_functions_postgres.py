@@ -1108,7 +1108,8 @@ class TestMetadataFunctions:
                 status TEXT,
                 error_message TEXT,
                 unpivot_row_multiplier INTEGER,
-                ingest_runtime INTEGER
+                ingest_runtime INTEGER,
+                output_table TEXT
             )
         """)
         execute_sql(db_conn,
@@ -1142,7 +1143,8 @@ class TestMetadataFunctions:
                 status TEXT,
                 error_message TEXT,
                 unpivot_row_multiplier INTEGER,
-                ingest_runtime INTEGER
+                ingest_runtime INTEGER,
+                output_table TEXT
             )
         """)
         execute_sql(db_conn,
@@ -1165,6 +1167,42 @@ class TestMetadataFunctions:
 
         assert result[0] == "Failure"
         assert result[1] == "Test error occurred"
+
+    def test_update_metadata_with_output_table(self, db_conn, sample_csv_file):
+        """Test updating metadata with output_table"""
+        # Create metadata table
+        execute_sql(db_conn, """
+            CREATE TABLE test_schema.metadata (
+                source_path TEXT PRIMARY KEY,
+                ingest_datetime TIMESTAMP,
+                status TEXT,
+                error_message TEXT,
+                unpivot_row_multiplier INTEGER,
+                ingest_runtime INTEGER,
+                output_table TEXT
+            )
+        """)
+        execute_sql(db_conn,
+            "INSERT INTO test_schema.metadata (source_path) VALUES ($1)",
+            (str(sample_csv_file),)
+        )
+
+        update_metadata(
+            conn=db_conn,
+            source_path=str(sample_csv_file),
+            schema="test_schema",
+            ingest_runtime=5,
+            output_table="raw.my_table",
+        )
+
+        # Verify update
+        result = execute_sql_fetchone(db_conn,
+            "SELECT status, output_table FROM test_schema.metadata WHERE source_path = $1",
+            (str(sample_csv_file),)
+        )
+
+        assert result[0] == "Success"
+        assert result[1] == "raw.my_table"
 
 
 # ===== SCHEMA INFERENCE TESTS =====
@@ -1805,7 +1843,8 @@ class TestEdgeCases:
                 status TEXT,
                 error_message TEXT,
                 unpivot_row_multiplier INTEGER,
-                ingest_runtime INTEGER
+                ingest_runtime INTEGER,
+                output_table TEXT
             )
         """)
         execute_sql(db_conn,
@@ -1994,7 +2033,8 @@ class TestMissingFunctions:
                 ingest_runtime INTEGER,
                 status TEXT,
                 error_message TEXT,
-                unpivot_row_multiplier INTEGER
+                unpivot_row_multiplier INTEGER,
+                output_table TEXT
             )
         """)
 
@@ -2067,7 +2107,8 @@ class TestMissingFunctions:
                 ingest_runtime INTEGER,
                 status TEXT,
                 error_message TEXT,
-                unpivot_row_multiplier INTEGER
+                unpivot_row_multiplier INTEGER,
+                output_table TEXT
             )
         """)
 
@@ -2165,7 +2206,8 @@ class TestAdditionalFunctions:
                 status TEXT,
                 error_message TEXT,
                 unpivot_row_multiplier INTEGER,
-                ingest_runtime INTEGER
+                ingest_runtime INTEGER,
+                output_table TEXT
             )
         """)
         execute_sql(db_conn,
@@ -2214,7 +2256,8 @@ class TestUpdateTableAdvancedFeatures:
                 ingest_runtime INTEGER,
                 status TEXT,
                 error_message TEXT,
-                unpivot_row_multiplier INTEGER
+                unpivot_row_multiplier INTEGER,
+                output_table TEXT
             )
         """)
 
@@ -2501,7 +2544,8 @@ class TestUpdateTableAdvancedFeatures:
                 ingest_runtime INTEGER,
                 status TEXT,
                 error_message TEXT,
-                unpivot_row_multiplier INTEGER
+                unpivot_row_multiplier INTEGER,
+                output_table TEXT
             )
         """)
 
@@ -3335,7 +3379,8 @@ class TestUpdateTableEdgeCases:
                 ingest_runtime INTEGER,
                 status TEXT,
                 error_message TEXT,
-                unpivot_row_multiplier INTEGER
+                unpivot_row_multiplier INTEGER,
+                output_table TEXT
             )
         """)
 
@@ -3463,7 +3508,8 @@ class TestUpdateTableEdgeCases:
                 ingest_runtime INTEGER,
                 status TEXT,
                 error_message TEXT,
-                unpivot_row_multiplier INTEGER
+                unpivot_row_multiplier INTEGER,
+                output_table TEXT
             )
         """)
         execute_sql(db_conn, """
