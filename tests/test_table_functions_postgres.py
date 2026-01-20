@@ -36,6 +36,12 @@ from src.table_functions_postgres import (
     path_join,
     path_basename,
     path_parent,
+    # Cache path utilities
+    get_persistent_temp_dir,
+    get_cache_path_from_s3,
+    get_archive_cache_path_from_s3,
+    get_cache_path_from_source_path,
+    set_temp_dir_override,
     # Column mapping
     prepare_column_mapping,
     # File readers
@@ -345,6 +351,108 @@ class TestPathUtilities:
     def test_path_parent_single_element(self):
         """Test parent of single element path"""
         assert path_parent("file.csv") == ""
+
+
+# ===== CACHE PATH TESTS =====
+
+
+class TestCachePaths:
+    """Test cache path functions for S3 files and archives"""
+
+    def test_get_cache_path_from_s3(self, temp_dir):
+        """Test S3 path to cache path conversion"""
+        set_temp_dir_override(temp_dir)
+        try:
+            cache_path = get_cache_path_from_s3("s3://my-bucket/data/file.csv")
+            assert cache_path == temp_dir / "my-bucket" / "data" / "file.csv"
+            # Parent directory should be created
+            assert cache_path.parent.exists()
+        finally:
+            set_temp_dir_override(None)
+
+    def test_get_archive_cache_path_from_s3(self, temp_dir):
+        """Test S3 archive path goes to archives subdirectory"""
+        set_temp_dir_override(temp_dir)
+        try:
+            cache_path = get_archive_cache_path_from_s3("s3://my-bucket/data/archive.zip")
+            assert cache_path == temp_dir / "archives" / "my-bucket" / "data" / "archive.zip"
+            # Parent directory should be created
+            assert cache_path.parent.exists()
+        finally:
+            set_temp_dir_override(None)
+
+    def test_get_cache_path_from_source_path_s3_file(self, temp_dir):
+        """Test cache path for regular S3 file (no archive)"""
+        set_temp_dir_override(temp_dir)
+        try:
+            cache_path = get_cache_path_from_source_path("s3://bucket/path/file.csv")
+            assert cache_path == temp_dir / "bucket" / "path" / "file.csv"
+        finally:
+            set_temp_dir_override(None)
+
+    def test_get_cache_path_from_source_path_s3_archive(self, temp_dir):
+        """Test cache path for S3 archive with inner path"""
+        set_temp_dir_override(temp_dir)
+        try:
+            cache_path = get_cache_path_from_source_path(
+                "s3://bucket/archive.zip::inner/file.csv"
+            )
+            # Extracted contents go in temp/bucket/archive.zip/inner/file.csv
+            # (NOT temp/archives/ - that's where the archive itself is cached)
+            assert cache_path == temp_dir / "bucket" / "archive.zip" / "inner" / "file.csv"
+            assert cache_path.parent.exists()
+        finally:
+            set_temp_dir_override(None)
+
+    def test_get_cache_path_from_source_path_local_file(self):
+        """Test that local files are returned as-is"""
+        cache_path = get_cache_path_from_source_path("/local/path/file.csv")
+        assert cache_path == Path("/local/path/file.csv")
+
+    def test_get_cache_path_from_source_path_local_archive(self, temp_dir):
+        """Test cache path for local archive with inner path"""
+        set_temp_dir_override(temp_dir)
+        try:
+            cache_path = get_cache_path_from_source_path(
+                "/local/archive.zip::inner/file.csv"
+            )
+            # Extracted contents go in temp/local/archive.zip/inner/file.csv
+            assert cache_path == temp_dir / "local" / "archive.zip" / "inner" / "file.csv"
+        finally:
+            set_temp_dir_override(None)
+
+    def test_archive_and_extracted_paths_dont_conflict(self, temp_dir):
+        """Test that archive cache and extracted contents don't conflict"""
+        set_temp_dir_override(temp_dir)
+        try:
+            # Where the downloaded archive goes
+            archive_cache = get_archive_cache_path_from_s3("s3://bucket/data.zip")
+            # Where extracted contents go
+            extracted_cache = get_cache_path_from_source_path(
+                "s3://bucket/data.zip::inner/file.csv"
+            )
+
+            # These should be different paths
+            assert archive_cache != extracted_cache
+            assert archive_cache.parent != extracted_cache.parent
+
+            # Archive goes in temp/archives/bucket/data.zip
+            assert "archives" in str(archive_cache)
+            # Extracted goes in temp/bucket/data.zip/inner/file.csv
+            assert "archives" not in str(extracted_cache)
+
+            # We should be able to create both without conflict
+            archive_cache.parent.mkdir(parents=True, exist_ok=True)
+            archive_cache.write_text("archive content")
+
+            extracted_cache.parent.mkdir(parents=True, exist_ok=True)
+            extracted_cache.write_text("extracted content")
+
+            # Both should exist
+            assert archive_cache.exists()
+            assert extracted_cache.exists()
+        finally:
+            set_temp_dir_override(None)
 
 
 # ===== COLUMN MAPPING TESTS =====
@@ -2614,6 +2722,20 @@ class TestAddFilesToMetadataTableEndToEnd:
         # Verify only filtered file was processed
         result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.metadata")
         assert result[0] == 1
+
+    def test_add_files_to_metadata_table_invalid_param_raises_error(self, conninfo):
+        """Test that invalid parameter names raise TypeError"""
+        with pytest.raises(TypeError) as exc_info:
+            add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir="/tmp",
+                filetype="csv",
+                file_glob="*.csv",  # Wrong param name - should be 'glob'
+            )
+
+        assert "file_glob" in str(exc_info.value)
+        assert "unexpected keyword argument" in str(exc_info.value)
 
 
 # ===== CLI SCHEMA INFERENCE TESTS =====

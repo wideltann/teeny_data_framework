@@ -3,12 +3,14 @@ Data ingestion framework using pandas and PostgreSQL
 Pure psycopg implementation for efficient bulk loading
 """
 
-import pandas as pd
-import numpy as np
-import psycopg
+import fnmatch
 import json
-from typing import Dict, List, Tuple, Optional, Callable, Any
 from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Callable, Any
+
+import numpy as np
+import pandas as pd
+import psycopg
 from loguru import logger
 
 
@@ -134,14 +136,14 @@ def get_cache_path_from_s3(s3_path: str) -> Path:
     Convert S3 path to local cache path that mirrors the S3 structure.
 
     Args:
-        s3_path: S3 path (e.g., "s3://my-bucket/raw-data/file.zip")
+        s3_path: S3 path (e.g., "s3://my-bucket/raw-data/file.csv")
 
     Returns:
-        Path to cached file location (e.g., temp/my-bucket/raw-data/file.zip)
+        Path to cached file location (e.g., temp/my-bucket/raw-data/file.csv)
 
     Examples:
-        s3://my-bucket/raw-data/census/file.zip
-        -> temp/my-bucket/raw-data/census/file.zip
+        s3://my-bucket/raw-data/census/file.csv
+        -> temp/my-bucket/raw-data/census/file.csv
 
         s3://bucket/subfolder/data.csv
         -> temp/bucket/subfolder/data.csv
@@ -150,6 +152,32 @@ def get_cache_path_from_s3(s3_path: str) -> Path:
     path_without_prefix = s3_path.replace("s3://", "")
     # Build cache path that mirrors S3 structure
     cache_path = get_persistent_temp_dir() / path_without_prefix
+    # Ensure parent directories exist
+    cache_path.parent.mkdir(exist_ok=True, parents=True)
+    return cache_path
+
+
+def get_archive_cache_path_from_s3(s3_path: str) -> Path:
+    """
+    Convert S3 archive path to local cache path in the archives subdirectory.
+
+    Archives are stored separately in temp/archives/ to avoid conflicts with
+    extracted contents which go in temp/bucket/archive.zip/...
+
+    Args:
+        s3_path: S3 path to archive (e.g., "s3://my-bucket/data/archive.zip")
+
+    Returns:
+        Path to cached archive (e.g., temp/archives/my-bucket/data/archive.zip)
+
+    Examples:
+        s3://my-bucket/data/archive.zip
+        -> temp/archives/my-bucket/data/archive.zip
+    """
+    # Remove s3:// prefix
+    path_without_prefix = s3_path.replace("s3://", "")
+    # Build cache path in archives subdirectory
+    cache_path = get_persistent_temp_dir() / "archives" / path_without_prefix
     # Ensure parent directories exist
     cache_path.parent.mkdir(exist_ok=True, parents=True)
     return cache_path
@@ -165,6 +193,9 @@ def get_cache_path_from_source_path(source_path: str) -> Path:
     - Local file: /path/to/file.csv -> /path/to/file.csv (returned as-is)
     - Local archive: /path/archive.zip::inner/file.csv -> temp/path/archive.zip/inner/file.csv
 
+    Note: Downloaded archives are stored in temp/archives/ (via get_archive_cache_path_from_s3)
+    while extracted contents go in temp/bucket/... This avoids path conflicts.
+
     Args:
         source_path: Source path with optional ::inner_path for archives
 
@@ -176,7 +207,8 @@ def get_cache_path_from_source_path(source_path: str) -> Path:
         archive_path, inner_path = source_path.split("::", 1)
 
         if is_s3_path(archive_path):
-            # S3 archive: temp/bucket/archive.zip/inner/file.csv
+            # S3 archive: extracted contents go in temp/bucket/archive.zip/inner/file.csv
+            # (the archive itself is cached separately in temp/archives/)
             path_without_prefix = archive_path.replace("s3://", "")
             cache_path = get_persistent_temp_dir() / path_without_prefix / inner_path
         else:
@@ -196,14 +228,17 @@ def get_cache_path_from_source_path(source_path: str) -> Path:
             return Path(source_path)
 
 
-def download_s3_file_with_cache(s3_path: str, filesystem: Any) -> Path:
+def download_s3_file_with_cache(
+    s3_path: str, filesystem: Any, is_archive: bool = False
+) -> Path:
     """
     Download S3 file to persistent cache, reusing cached file if it exists with matching size.
     Files are cached in temp/ directory with structure mirroring S3 paths.
 
     Args:
-        s3_path: S3 path to download (e.g., "s3://bucket/path/file.zip")
+        s3_path: S3 path to download (e.g., "s3://bucket/path/file.csv")
         filesystem: s3fs.S3FileSystem instance
+        is_archive: If True, cache in temp/archives/ to avoid conflicts with extracted contents
 
     Returns:
         Path to cached file in temp/ directory
@@ -214,7 +249,10 @@ def download_s3_file_with_cache(s3_path: str, filesystem: Any) -> Path:
         - Only re-downloads if sizes differ or file missing
         - Cached files persist across runs until manually deleted
     """
-    cache_path = get_cache_path_from_s3(s3_path)
+    if is_archive:
+        cache_path = get_archive_cache_path_from_s3(s3_path)
+    else:
+        cache_path = get_cache_path_from_s3(s3_path)
 
     # Get S3 file size
     s3_info = filesystem.info(s3_path)
@@ -1189,7 +1227,6 @@ def extract_and_add_zip_files(
         logger.debug("Missing zipfile_deflate64, using zipfile")
         import zipfile
 
-    import fnmatch
     import shutil
 
     # Normalize source_dir
@@ -1212,9 +1249,9 @@ def extract_and_add_zip_files(
 
         archive_path = str(compressed)
 
-        # Download archive from S3 if needed (uses persistent cache)
+        # Download archive from S3 if needed (uses persistent cache in temp/archives/)
         if is_s3_path(archive_path):
-            cached_zip = download_s3_file_with_cache(archive_path, fs)
+            cached_zip = download_s3_file_with_cache(archive_path, fs, is_archive=True)
             zip_path = str(cached_zip)
         else:
             zip_path = archive_path
@@ -1476,6 +1513,24 @@ def get_file_metadata_row(
     return row
 
 
+# Valid parameters for add_files_to_metadata_table
+_ADD_FILES_VALID_PARAMS = {
+    "schema",
+    "source_dir",
+    "filetype",
+    "glob",
+    "compression_type",
+    "archive_glob",
+    "has_header",
+    "encoding",
+    "resume",
+    "retry_failed",
+    "sample",
+    "file_list_filter_fn",
+    "filesystem",
+}
+
+
 def add_files_to_metadata_table(
     conninfo: str, ephemeral_cache: bool = False, **kwargs: Any
 ) -> pd.DataFrame:
@@ -1488,6 +1543,14 @@ def add_files_to_metadata_table(
                         If False (default), use persistent temp/ directory.
     """
     import tempfile
+
+    # Validate kwargs - fail fast on unknown parameters
+    unknown_params = set(kwargs.keys()) - _ADD_FILES_VALID_PARAMS
+    if unknown_params:
+        raise TypeError(
+            f"add_files_to_metadata_table() got unexpected keyword argument(s): {', '.join(sorted(unknown_params))}. "
+            f"Valid parameters are: {', '.join(sorted(_ADD_FILES_VALID_PARAMS))}"
+        )
 
     temp_dir_context = None
     if ephemeral_cache:
