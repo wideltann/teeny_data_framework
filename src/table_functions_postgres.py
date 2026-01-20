@@ -2014,7 +2014,7 @@ Examples:
 
     # Validate path exists
     if not input_path.exists():
-        print(f"Error: Path not found: {args.path}")
+        logger.error(f"Path not found: {args.path}")
         exit(1)
 
     try:
@@ -2033,8 +2033,8 @@ Examples:
             ])
 
             if not files:
-                print(f"Error: No matching files found in {args.path}")
-                print(f"Looking for extensions: {extensions}")
+                logger.error(f"No matching files found in {args.path}")
+                logger.error(f"Looking for extensions: {extensions}")
                 exit(1)
 
             # Build output dictionary keyed by filename
@@ -2056,7 +2056,7 @@ Examples:
                         "column_mapping": column_mapping,
                     }
                 except Exception as e:
-                    print(f"Warning: Failed to infer schema for {file_path.name}: {e}", file=__import__('sys').stderr)
+                    logger.warning(f"Failed to infer schema for {file_path.name}: {e}")
                     output[file_path.name] = {"error": str(e)}
 
             # Output as JSON
@@ -2091,8 +2091,5 @@ Examples:
                 print(json.dumps(output))
 
     except Exception as e:
-        print(f"Error inferring schema: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.exception(f"Error inferring schema: {e}")
         exit(1)

@@ -2878,7 +2878,9 @@ class TestCLISchemaInference:
         )
 
         assert result.returncode == 1
-        assert "Error" in result.stdout or "not found" in result.stdout.lower()
+        # Error messages go to stderr via loguru
+        output = result.stdout + result.stderr
+        assert "Error" in output or "not found" in output.lower()
 
     def test_cli_parquet_file(self, temp_dir):
         """Test CLI with parquet file"""
@@ -2989,7 +2991,9 @@ class TestCLISchemaInference:
         )
 
         assert result.returncode == 1
-        assert "No matching files" in result.stdout or "Error" in result.stdout
+        # Error messages go to stderr via loguru
+        output = result.stdout + result.stderr
+        assert "No matching files" in output or "Error" in output
 
     def test_cli_directory_mode_non_recursive(self, temp_dir):
         """Test CLI directory mode is non-recursive (doesn't descend into subdirs)"""
@@ -3092,7 +3096,9 @@ class TestCLISchemaInference:
         )
 
         assert result.returncode == 1
-        assert "Error" in result.stdout or "not found" in result.stdout.lower()
+        # Error messages go to stderr via loguru
+        output = result.stdout + result.stderr
+        assert "Error" in output or "not found" in output.lower()
 
 
 # ===== CONNECTION AND SQL HELPER TESTS =====
