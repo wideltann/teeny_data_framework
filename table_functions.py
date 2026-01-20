@@ -1215,7 +1215,7 @@ def extract_and_add_zip_files(
     archive_glob: Optional[str] = None,
     filesystem: Optional[Any] = None,
     **kwargs,  # Accept but ignore extra kwargs for compatibility
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """
     Extract files from ZIP archives and add to metadata.
 
@@ -1223,6 +1223,11 @@ def extract_and_add_zip_files(
     e.g., "s3://bucket/data.zip::folder/file.csv"
 
     Files are extracted to temp/ cache, mirroring the source structure.
+
+    Returns:
+        Tuple of (rows, archive_stats) where:
+        - rows: List of metadata dictionaries for each processed file
+        - archive_stats: Dict mapping archive_path to count of files processed from that archive
     """
     try:
         import zipfile_deflate64 as zipfile
@@ -1235,6 +1240,7 @@ def extract_and_add_zip_files(
     source_dir = normalize_path(source_dir) if source_dir else None
 
     rows = []
+    archive_stats: Dict[str, int] = {}  # archive_path -> files processed count
     num_processed = 0
 
     # Get filesystem if any S3 source paths involved
@@ -1250,6 +1256,7 @@ def extract_and_add_zip_files(
             break
 
         archive_path = str(compressed)
+        archive_file_count = 0  # Track files processed from this archive
 
         # Download archive from S3 if needed (uses persistent cache in temp/archives/)
         if is_s3_path(archive_path):
@@ -1311,6 +1318,7 @@ def extract_and_add_zip_files(
                         has_header=has_header,
                         encoding=encoding,
                     )
+                    archive_file_count += 1
 
                 except Exception as e:
                     print(f"Failed on {inner_path} with {e}", file=sys.stderr)
@@ -1335,7 +1343,11 @@ def extract_and_add_zip_files(
 
                 rows.append(row)
 
-    return rows
+        # Record stats for this archive
+        if archive_file_count > 0:
+            archive_stats[archive_path] = archive_file_count
+
+    return rows, archive_stats
 
 
 def add_files(
@@ -1539,6 +1551,7 @@ _ADD_FILES_VALID_PARAMS = {
     "sample",
     "file_list_filter_fn",
     "filesystem",
+    "expected_archive_file_count",
 }
 
 
@@ -1623,6 +1636,7 @@ def _add_files_to_metadata_table_impl(
     kwargs["file_list"] = file_list
 
     output_table = f"{schema}.metadata"
+    archive_metadata_table = f"{schema}.archive_metadata"
 
     # Create metadata table if it doesn't exist
     with psycopg.connect(conninfo) as conn:
@@ -1649,32 +1663,112 @@ def _add_files_to_metadata_table_impl(
                 cur.execute(create_table_sql)
             conn.commit()
 
+        # Create archive_metadata table if it doesn't exist (for tracking archive completion)
+        if compression_type and not table_exists(conn, schema, "archive_metadata"):
+            create_archive_table_sql = f"""
+                CREATE TABLE {archive_metadata_table} (
+                    archive_path TEXT PRIMARY KEY,
+                    source_dir TEXT,
+                    expected_file_count INTEGER,
+                    processed_file_count INTEGER,
+                    status TEXT,
+                    ingest_datetime TIMESTAMP
+                )
+            """
+            with conn.cursor() as cur:
+                cur.execute(create_archive_table_sql)
+            conn.commit()
+
     resume = kwargs.get("resume", False)
     retry_failed = kwargs.pop("retry_failed", False)
+    expected_archive_file_count = kwargs.pop("expected_archive_file_count", None)
 
     kwargs["source_path_list"] = []
+    completed_archives = set()
+
     if resume:
+        # source_dir stored in metadata has trailing slash, so add it for matching
+        source_dir_match = source_dir + "/"
         sql = f"""
             SELECT source_path
             FROM {output_table}
             WHERE
-                source_dir LIKE %s
+                source_dir = %s
                 {"AND metadata_ingest_status = 'Success'" if not retry_failed else ""}
         """
 
         with psycopg.connect(conninfo) as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (source_dir,))
+                cur.execute(sql, (source_dir_match,))
                 rows = cur.fetchall()
         kwargs["source_path_list"] = [row[0] for row in rows]
 
+        # For archives: check archive_metadata for completed archives to skip entirely
+        if compression_type:
+            sql = f"""
+                SELECT archive_path
+                FROM {archive_metadata_table}
+                WHERE
+                    source_dir = %s
+                    AND status = 'Success'
+            """
+            with psycopg.connect(conninfo) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (source_dir_match,))
+                    archive_rows = cur.fetchall()
+            completed_archives = {row[0] for row in archive_rows}
+
+            if completed_archives:
+                original_count = len(file_list)
+                file_list = [f for f in file_list if f not in completed_archives]
+                skipped_count = original_count - len(file_list)
+                if skipped_count > 0:
+                    print(f"Skipping {skipped_count} completed archive(s)")
+                kwargs["file_list"] = file_list
+
     match compression_type:
         case "zip":
-            rows = extract_and_add_zip_files(**kwargs)
+            rows, archive_stats = extract_and_add_zip_files(**kwargs)
         case None:
             rows = add_files(**kwargs)
+            archive_stats = {}
         case _:
             raise Exception("Unsupported compression type")
+
+    # Update archive_metadata for processed archives
+    if compression_type and archive_stats and expected_archive_file_count is not None:
+        from datetime import datetime
+
+        source_dir_match = source_dir + "/"
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                for archive_path, processed_count in archive_stats.items():
+                    status = "Success" if processed_count >= expected_archive_file_count else "Partial"
+                    cur.execute(
+                        f"""
+                        INSERT INTO {archive_metadata_table}
+                        (archive_path, source_dir, expected_file_count, processed_file_count, status, ingest_datetime)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (archive_path)
+                        DO UPDATE SET
+                            processed_file_count = {archive_metadata_table}.processed_file_count + EXCLUDED.processed_file_count,
+                            status = CASE
+                                WHEN {archive_metadata_table}.processed_file_count + EXCLUDED.processed_file_count >= EXCLUDED.expected_file_count
+                                THEN 'Success'
+                                ELSE 'Partial'
+                            END,
+                            ingest_datetime = EXCLUDED.ingest_datetime
+                        """,
+                        (
+                            archive_path,
+                            source_dir_match,
+                            expected_archive_file_count,
+                            processed_count,
+                            status,
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        ),
+                    )
+            conn.commit()
 
     if len(rows) == 0:
         print("Did not add any files to metadata table")

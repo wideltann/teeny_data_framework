@@ -1627,7 +1627,7 @@ class TestIntegration:
             os.chdir(temp_dir)
             file_list = [str(sample_zip_file)]
 
-            rows = extract_and_add_zip_files(
+            rows, archive_stats = extract_and_add_zip_files(
                 file_list=file_list,
                 source_path_list=[],
                 source_dir=str(temp_dir) + "/",
@@ -1640,6 +1640,8 @@ class TestIntegration:
             )
 
             assert len(rows) == 2  # Two CSV files in the ZIP
+            assert len(archive_stats) == 1  # One archive processed
+            assert archive_stats[str(sample_zip_file)] == 2  # 2 files from that archive
 
             # Verify source_path has :: delimiter for archives
             for row in rows:
@@ -1662,7 +1664,7 @@ class TestIntegration:
                 zf.writestr("subdir/nested/file1.csv", "a,b\n1,2\n")
                 zf.writestr("another/deep/path/file2.csv", "x,y\n3,4\n")
 
-            rows = extract_and_add_zip_files(
+            rows, archive_stats = extract_and_add_zip_files(
                 file_list=[str(zip_path)],
                 source_path_list=[],
                 source_dir=str(temp_dir) + "/",
@@ -1704,7 +1706,7 @@ class TestIntegration:
             # Count temp dirs before
             temp_dirs_before = set(system_temp.iterdir())
 
-            rows = extract_and_add_zip_files(
+            rows, archive_stats = extract_and_add_zip_files(
                 file_list=[str(zip_path)],
                 source_path_list=[],
                 source_dir=str(temp_dir) + "/",
@@ -4288,6 +4290,534 @@ class TestS3GetCachePathFromSourcePath:
             result = get_cache_path_from_source_path("/local/archive.zip::inner/file.csv")
             expected = Path(temp_dir).resolve() / "temp" / "local" / "archive.zip" / "inner" / "file.csv"
             assert result.resolve() == expected
+        finally:
+            os.chdir(original_cwd)
+
+
+class TestArchiveResumeSkipsProcessedFiles:
+    """Test that resume=True properly skips already-processed archive files"""
+
+    def test_resume_skips_files_in_metadata(self, conninfo, db_conn, temp_dir, capsys):
+        """Test that resume=True skips files already in metadata table"""
+        import zipfile
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create a ZIP with multiple CSV files
+            zip_path = temp_dir / "test_archive.zip"
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr("file1.csv", "a,b\n1,2\n3,4\n")
+                zf.writestr("file2.csv", "x,y\n5,6\n")
+                zf.writestr("file3.csv", "p,q\n7,8\n")
+
+            source_dir = str(temp_dir) + "/"
+
+            # First run: process all files (resume=False)
+            result1 = add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir=source_dir,
+                filetype="csv",
+                compression_type="zip",
+                archive_glob="*.csv",
+                has_header=True,
+                resume=False,
+                ephemeral_cache=True,
+            )
+
+            # Verify all 3 files were processed
+            assert len(result1) == 3
+
+            # Check metadata table has all 3 files
+            count1 = execute_sql_fetchone(db_conn,
+                "SELECT COUNT(*) FROM test_schema.metadata WHERE metadata_ingest_status = 'Success'"
+            )
+            assert count1[0] == 3
+
+            # Clear captured output from first run
+            capsys.readouterr()
+
+            # Second run: with resume=True, should skip all files
+            result2 = add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir=source_dir,
+                filetype="csv",
+                compression_type="zip",
+                archive_glob="*.csv",
+                has_header=True,
+                resume=True,
+                ephemeral_cache=True,
+            )
+
+            # Should return existing 3 files but not re-process them
+            # The function returns the metadata query results, not what was processed
+            assert len(result2) == 3
+
+            # Verify that files were skipped (not re-processed)
+            captured = capsys.readouterr()
+            assert "Skipped (in metadata)" in captured.out
+            # Should NOT see "Row count" for any file (that means it was re-processed)
+            assert "Row count:" not in captured.out
+
+        finally:
+            os.chdir(original_cwd)
+
+    def test_resume_processes_only_new_files(self, conninfo, db_conn, temp_dir, capsys):
+        """Test that resume=True only processes new files not in metadata"""
+        import zipfile
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create first ZIP with 2 files
+            zip_path1 = temp_dir / "archive1.zip"
+            with zipfile.ZipFile(zip_path1, 'w') as zf:
+                zf.writestr("file1.csv", "a,b\n1,2\n")
+                zf.writestr("file2.csv", "x,y\n3,4\n")
+
+            source_dir = str(temp_dir) + "/"
+
+            # First run: process first archive
+            add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir=source_dir,
+                filetype="csv",
+                compression_type="zip",
+                archive_glob="*.csv",
+                has_header=True,
+                resume=False,
+                ephemeral_cache=True,
+            )
+
+            # Verify 2 files in metadata
+            count1 = execute_sql_fetchone(db_conn,
+                "SELECT COUNT(*) FROM test_schema.metadata"
+            )
+            assert count1[0] == 2
+
+            # Create second ZIP with 2 more files
+            zip_path2 = temp_dir / "archive2.zip"
+            with zipfile.ZipFile(zip_path2, 'w') as zf:
+                zf.writestr("file3.csv", "p,q\n5,6\n")
+                zf.writestr("file4.csv", "m,n\n7,8\n")
+
+            # Clear captured output
+            capsys.readouterr()
+
+            # Second run with resume=True: should only process new files
+            add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir=source_dir,
+                filetype="csv",
+                compression_type="zip",
+                archive_glob="*.csv",
+                has_header=True,
+                resume=True,
+                ephemeral_cache=True,
+            )
+
+            # Should now have 4 files total
+            count2 = execute_sql_fetchone(db_conn,
+                "SELECT COUNT(*) FROM test_schema.metadata"
+            )
+            assert count2[0] == 4
+
+            # Verify files from first archive were skipped
+            captured = capsys.readouterr()
+            assert "Skipped (in metadata): file1.csv" in captured.out
+            assert "Skipped (in metadata): file2.csv" in captured.out
+            # New files should be extracted
+            assert "Extracted" in captured.out
+
+        finally:
+            os.chdir(original_cwd)
+
+    def test_extract_and_add_zip_files_resume_skips(self, temp_dir):
+        """Test extract_and_add_zip_files directly with resume=True"""
+        import zipfile
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create a ZIP with 3 files
+            zip_path = temp_dir / "test.zip"
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr("a.csv", "col1,col2\n1,2\n")
+                zf.writestr("b.csv", "col1,col2\n3,4\n")
+                zf.writestr("c.csv", "col1,col2\n5,6\n")
+
+            source_dir = str(temp_dir) + "/"
+            archive_path = str(zip_path)
+
+            # Simulate that file a.csv and b.csv are already in metadata
+            already_processed = [
+                f"{archive_path}::a.csv",
+                f"{archive_path}::b.csv",
+            ]
+
+            # Call with resume=True and pre-populated source_path_list
+            rows, archive_stats = extract_and_add_zip_files(
+                file_list=[archive_path],
+                source_path_list=already_processed,
+                source_dir=source_dir,
+                has_header=True,
+                filetype="csv",
+                resume=True,
+                sample=None,
+                encoding="utf-8",
+                archive_glob="*.csv",
+            )
+
+            # Should only return 1 row (c.csv), skipping a.csv and b.csv
+            assert len(rows) == 1
+            assert rows[0]["source_path"] == f"{archive_path}::c.csv"
+            assert archive_stats[archive_path] == 1  # Only 1 file processed from archive
+
+        finally:
+            os.chdir(original_cwd)
+
+    def test_extract_and_add_zip_files_resume_false_processes_all(self, temp_dir):
+        """Test extract_and_add_zip_files with resume=False processes all files"""
+        import zipfile
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create a ZIP with 3 files
+            zip_path = temp_dir / "test.zip"
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr("a.csv", "col1,col2\n1,2\n")
+                zf.writestr("b.csv", "col1,col2\n3,4\n")
+                zf.writestr("c.csv", "col1,col2\n5,6\n")
+
+            source_dir = str(temp_dir) + "/"
+            archive_path = str(zip_path)
+
+            # Even with source_path_list populated, resume=False should process all
+            already_processed = [
+                f"{archive_path}::a.csv",
+                f"{archive_path}::b.csv",
+            ]
+
+            rows, archive_stats = extract_and_add_zip_files(
+                file_list=[archive_path],
+                source_path_list=already_processed,
+                source_dir=source_dir,
+                has_header=True,
+                filetype="csv",
+                resume=False,  # Not resuming
+                sample=None,
+                encoding="utf-8",
+                archive_glob="*.csv",
+            )
+
+            # Should return all 3 files
+            assert len(rows) == 3
+            assert archive_stats[archive_path] == 3
+
+        finally:
+            os.chdir(original_cwd)
+
+
+class TestArchiveMetadataTable:
+    """Test archive_metadata table for skipping completed archives entirely"""
+
+    def test_archive_metadata_table_created(self, conninfo, db_conn, temp_dir):
+        """Test that archive_metadata table is created when using compression_type"""
+        import zipfile
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create a ZIP with files
+            zip_path = temp_dir / "test.zip"
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr("file1.csv", "a,b\n1,2\n")
+
+            source_dir = str(temp_dir) + "/"
+
+            add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir=source_dir,
+                filetype="csv",
+                compression_type="zip",
+                archive_glob="*.csv",
+                has_header=True,
+                ephemeral_cache=True,
+            )
+
+            # Verify archive_metadata table was created
+            result = execute_sql_fetchone(db_conn,
+                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'test_schema' AND table_name = 'archive_metadata')"
+            )
+            assert result[0] is True
+
+        finally:
+            os.chdir(original_cwd)
+
+    def test_archive_marked_success_when_expected_count_met(self, conninfo, db_conn, temp_dir):
+        """Test that archive is marked Success when expected_archive_file_count is met"""
+        import zipfile
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create a ZIP with 3 files
+            zip_path = temp_dir / "test.zip"
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr("file1.csv", "a,b\n1,2\n")
+                zf.writestr("file2.csv", "x,y\n3,4\n")
+                zf.writestr("file3.csv", "p,q\n5,6\n")
+
+            source_dir = str(temp_dir) + "/"
+
+            add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir=source_dir,
+                filetype="csv",
+                compression_type="zip",
+                archive_glob="*.csv",
+                has_header=True,
+                expected_archive_file_count=3,
+                ephemeral_cache=True,
+            )
+
+            # Verify archive_metadata has Success status
+            result = execute_sql_fetchone(db_conn,
+                "SELECT status, processed_file_count, expected_file_count FROM test_schema.archive_metadata WHERE archive_path = %s",
+                (str(zip_path),)
+            )
+            assert result[0] == "Success"
+            assert result[1] == 3
+            assert result[2] == 3
+
+        finally:
+            os.chdir(original_cwd)
+
+    def test_archive_marked_partial_when_expected_count_not_met(self, conninfo, db_conn, temp_dir):
+        """Test that archive is marked Partial when expected_archive_file_count is not met"""
+        import zipfile
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create a ZIP with 2 files
+            zip_path = temp_dir / "test.zip"
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr("file1.csv", "a,b\n1,2\n")
+                zf.writestr("file2.csv", "x,y\n3,4\n")
+
+            source_dir = str(temp_dir) + "/"
+
+            add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir=source_dir,
+                filetype="csv",
+                compression_type="zip",
+                archive_glob="*.csv",
+                has_header=True,
+                expected_archive_file_count=5,  # More than actual files
+                ephemeral_cache=True,
+            )
+
+            # Verify archive_metadata has Partial status
+            result = execute_sql_fetchone(db_conn,
+                "SELECT status, processed_file_count, expected_file_count FROM test_schema.archive_metadata WHERE archive_path = %s",
+                (str(zip_path),)
+            )
+            assert result[0] == "Partial"
+            assert result[1] == 2
+            assert result[2] == 5
+
+        finally:
+            os.chdir(original_cwd)
+
+    def test_completed_archives_skipped_on_resume(self, conninfo, db_conn, temp_dir, capsys):
+        """Test that archives marked Success are skipped entirely on resume"""
+        import zipfile
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create two ZIPs
+            zip_path1 = temp_dir / "archive1.zip"
+            with zipfile.ZipFile(zip_path1, 'w') as zf:
+                zf.writestr("file1.csv", "a,b\n1,2\n")
+                zf.writestr("file2.csv", "x,y\n3,4\n")
+
+            zip_path2 = temp_dir / "archive2.zip"
+            with zipfile.ZipFile(zip_path2, 'w') as zf:
+                zf.writestr("file3.csv", "p,q\n5,6\n")
+                zf.writestr("file4.csv", "m,n\n7,8\n")
+
+            source_dir = str(temp_dir) + "/"
+
+            # First run: process both archives
+            add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir=source_dir,
+                filetype="csv",
+                compression_type="zip",
+                archive_glob="*.csv",
+                has_header=True,
+                expected_archive_file_count=2,
+                ephemeral_cache=True,
+            )
+
+            # Verify both archives are Success
+            result = execute_sql_fetch(db_conn,
+                "SELECT archive_path, status FROM test_schema.archive_metadata ORDER BY archive_path"
+            )
+            assert len(result) == 2
+            assert all(row[1] == "Success" for row in result)
+
+            # Clear captured output
+            capsys.readouterr()
+
+            # Second run with resume=True: should skip both archives entirely
+            add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir=source_dir,
+                filetype="csv",
+                compression_type="zip",
+                archive_glob="*.csv",
+                has_header=True,
+                expected_archive_file_count=2,
+                resume=True,
+                ephemeral_cache=True,
+            )
+
+            # Verify "Skipping" message was printed
+            captured = capsys.readouterr()
+            assert "Skipping 2 completed archive(s)" in captured.out
+            # Should NOT see any "Extracted" or "Row count" messages
+            assert "Extracted" not in captured.out
+            assert "Row count" not in captured.out
+
+        finally:
+            os.chdir(original_cwd)
+
+    def test_partial_archives_not_skipped_on_resume(self, conninfo, db_conn, temp_dir, capsys):
+        """Test that archives marked Partial are still processed on resume"""
+        import zipfile
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create a ZIP with 2 files
+            zip_path = temp_dir / "test.zip"
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr("file1.csv", "a,b\n1,2\n")
+                zf.writestr("file2.csv", "x,y\n3,4\n")
+
+            source_dir = str(temp_dir) + "/"
+
+            # First run: process with high expected count (will be Partial)
+            add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir=source_dir,
+                filetype="csv",
+                compression_type="zip",
+                archive_glob="*.csv",
+                has_header=True,
+                expected_archive_file_count=10,  # High, so Partial
+                ephemeral_cache=True,
+            )
+
+            # Verify archive is Partial
+            result = execute_sql_fetchone(db_conn,
+                "SELECT status FROM test_schema.archive_metadata WHERE archive_path = %s",
+                (str(zip_path),)
+            )
+            assert result[0] == "Partial"
+
+            # Clear captured output
+            capsys.readouterr()
+
+            # Second run with resume=True: should NOT skip (Partial status)
+            add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir=source_dir,
+                filetype="csv",
+                compression_type="zip",
+                archive_glob="*.csv",
+                has_header=True,
+                expected_archive_file_count=10,
+                resume=True,
+                ephemeral_cache=True,
+            )
+
+            # Should NOT see "Skipping completed archive" message
+            captured = capsys.readouterr()
+            assert "Skipping" not in captured.out or "completed archive" not in captured.out
+
+        finally:
+            os.chdir(original_cwd)
+
+    def test_no_archive_metadata_without_expected_count(self, conninfo, db_conn, temp_dir):
+        """Test that archive_metadata is not updated if expected_archive_file_count is not provided"""
+        import zipfile
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create a ZIP
+            zip_path = temp_dir / "test.zip"
+            with zipfile.ZipFile(zip_path, 'w') as zf:
+                zf.writestr("file1.csv", "a,b\n1,2\n")
+
+            source_dir = str(temp_dir) + "/"
+
+            # Process without expected_archive_file_count
+            add_files_to_metadata_table(
+                conninfo=conninfo,
+                schema="test_schema",
+                source_dir=source_dir,
+                filetype="csv",
+                compression_type="zip",
+                archive_glob="*.csv",
+                has_header=True,
+                # No expected_archive_file_count
+                ephemeral_cache=True,
+            )
+
+            # archive_metadata table exists but should have no rows
+            result = execute_sql_fetchone(db_conn,
+                "SELECT COUNT(*) FROM test_schema.archive_metadata"
+            )
+            assert result[0] == 0
+
         finally:
             os.chdir(original_cwd)
 
