@@ -1288,17 +1288,21 @@ def extract_and_add_zip_files(
                 cache_path = get_cache_path_from_source_path(source_path)
 
                 try:
-                    # Extract to temp directory, then move to cache location
-                    # Using extract() + move instead of read() to avoid loading entire file into RAM
-                    import tempfile
+                    # Check if already extracted to cache
+                    if cache_path.exists():
+                        print(f"{file_num} Cache hit: {cache_path.relative_to(Path.cwd())}")
+                    else:
+                        # Extract to temp directory, then move to cache location
+                        # Using extract() + move instead of read() to avoid loading entire file into RAM
+                        import tempfile
 
-                    with tempfile.TemporaryDirectory() as temp_extract_dir:
-                        zip_ref.extract(inner_path, temp_extract_dir)
-                        extracted_file = Path(temp_extract_dir) / inner_path
+                        with tempfile.TemporaryDirectory() as temp_extract_dir:
+                            zip_ref.extract(inner_path, temp_extract_dir)
+                            extracted_file = Path(temp_extract_dir) / inner_path
 
-                        shutil.move(str(extracted_file), str(cache_path))
+                            shutil.move(str(extracted_file), str(cache_path))
 
-                    print(f"{file_num} Extracted {source_path}")
+                        print(f"{file_num} Extracted: {source_path}")
 
                     row = get_file_metadata_row(
                         source_path=source_path,
