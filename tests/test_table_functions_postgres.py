@@ -27,7 +27,7 @@ from testcontainers.postgres import PostgresContainer
 import psycopg
 
 # Import functions to test
-from src.table_functions_postgres import (
+from table_functions_postgres import (
     # S3 helpers
     is_s3_path,
     get_s3_filesystem,
@@ -1462,7 +1462,7 @@ Jane,Smith,25
 
         # Run CLI
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(csv_path), "--pretty"],
+            ["python", "table_functions_postgres.py", str(csv_path), "--pretty"],
             capture_output=True,
             text=True,
         )
@@ -1513,7 +1513,7 @@ bar,2
 
         # Run CLI on directory
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(data_dir), "--pretty"],
+            ["python", "table_functions_postgres.py", str(data_dir), "--pretty"],
             capture_output=True,
             text=True,
         )
@@ -1556,7 +1556,7 @@ Gadget,25.50
 
         # Get CLI output
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(data_dir), "--pretty"],
+            ["python", "table_functions_postgres.py", str(data_dir), "--pretty"],
             capture_output=True,
             text=True,
         )
@@ -2807,7 +2807,7 @@ class TestCLISchemaInference:
 
         # Run CLI
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(csv_path), "--pretty"],
+            ["python", "table_functions_postgres.py", str(csv_path), "--pretty"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -2831,7 +2831,7 @@ class TestCLISchemaInference:
         psv_path.write_text("name|age|score\nAlice|25|85.5\n")
 
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(psv_path), "--pretty"],
+            ["python", "table_functions_postgres.py", str(psv_path), "--pretty"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -2850,7 +2850,7 @@ class TestCLISchemaInference:
         csv_path.write_text("Alice,25,85.5\nBob,30,92.0\n")
 
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(csv_path), "--no-header", "--pretty"],
+            ["python", "table_functions_postgres.py", str(csv_path), "--no-header", "--pretty"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -2872,7 +2872,7 @@ class TestCLISchemaInference:
         csv_path.write_text("name;age;score\nAlice;25;85.5\n")
 
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(csv_path),
+            ["python", "table_functions_postgres.py", str(csv_path),
              "--separator", ";", "--pretty"],
             capture_output=True,
             text=True,
@@ -2897,7 +2897,7 @@ class TestCLISchemaInference:
                 f.write(f"{i},{i * 10}\n")
 
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(csv_path),
+            ["python", "table_functions_postgres.py", str(csv_path),
              "--sample-rows", "100", "--pretty"],
             capture_output=True,
             text=True,
@@ -2915,7 +2915,7 @@ class TestCLISchemaInference:
         import subprocess
 
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", "/nonexistent/file.csv"],
+            ["python", "table_functions_postgres.py", "/nonexistent/file.csv"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -2939,7 +2939,7 @@ class TestCLISchemaInference:
         test_df.to_parquet(str(parquet_path))
 
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(parquet_path), "--pretty"],
+            ["python", "table_functions_postgres.py", str(parquet_path), "--pretty"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -2963,7 +2963,7 @@ class TestCLISchemaInference:
         (sub_dir / "file2.csv").write_text("id,value,score\n1,100,85.5\n2,200,92.0\n")
 
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(sub_dir), "--pretty"],
+            ["python", "table_functions_postgres.py", str(sub_dir), "--pretty"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3004,7 +3004,7 @@ class TestCLISchemaInference:
 
         # Filter to only CSV files
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(sub_dir),
+            ["python", "table_functions_postgres.py", str(sub_dir),
              "--filetype", "csv", "--pretty"],
             capture_output=True,
             text=True,
@@ -3028,7 +3028,7 @@ class TestCLISchemaInference:
         empty_dir.mkdir()
 
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(empty_dir)],
+            ["python", "table_functions_postgres.py", str(empty_dir)],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3053,7 +3053,7 @@ class TestCLISchemaInference:
         (child_dir / "child_file.csv").write_text("x,y\n3,4\n")
 
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(parent_dir), "--pretty"],
+            ["python", "table_functions_postgres.py", str(parent_dir), "--pretty"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3079,7 +3079,7 @@ class TestCLISchemaInference:
         (sub_dir / "bad.csv").write_bytes(b"\x00\x01\x02\x03\xff\xfe")
 
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(sub_dir), "--pretty"],
+            ["python", "table_functions_postgres.py", str(sub_dir), "--pretty"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3113,7 +3113,7 @@ class TestCLISchemaInference:
         test_df.to_parquet(str(sub_dir / "data.parquet"))
 
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", str(sub_dir), "--pretty"],
+            ["python", "table_functions_postgres.py", str(sub_dir), "--pretty"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3133,7 +3133,7 @@ class TestCLISchemaInference:
         import subprocess
 
         result = subprocess.run(
-            ["python", "src/table_functions_postgres.py", "/nonexistent/directory/"],
+            ["python", "table_functions_postgres.py", "/nonexistent/directory/"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3987,7 +3987,7 @@ class TestEphemeralCache:
 
     def test_ephemeral_cache_add_files(self, conninfo, temp_dir):
         """Test that ephemeral_cache=True uses a temp directory that gets cleaned up"""
-        from src.table_functions_postgres import get_persistent_temp_dir
+        from table_functions_postgres import get_persistent_temp_dir
 
         csv_dir = temp_dir / "source"
         csv_dir.mkdir()

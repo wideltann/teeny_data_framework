@@ -12,16 +12,16 @@ Use the CLI to automatically infer column types from your data files. This gener
 
 ```bash
 # Infer schema from a single file
-python src/table_functions_postgres.py <file_path> --pretty
+python table_functions_postgres.py <file_path> --pretty
 
 # Infer schema from all files in a directory (output keyed by filename)
-python src/table_functions_postgres.py <directory_path> --pretty
+python table_functions_postgres.py <directory_path> --pretty
 
 # Examples
-python src/table_functions_postgres.py data/raw/my_file.csv --pretty
-python src/table_functions_postgres.py data/raw/my_file.psv --filetype psv --pretty
-python src/table_functions_postgres.py data/raw/my_file.data --no-header --pretty
-python src/table_functions_postgres.py data/raw/earthquakes/ --pretty  # All files in dir
+python table_functions_postgres.py data/raw/my_file.csv --pretty
+python table_functions_postgres.py data/raw/my_file.psv --filetype psv --pretty
+python table_functions_postgres.py data/raw/my_file.data --no-header --pretty
+python table_functions_postgres.py data/raw/earthquakes/ --pretty  # All files in dir
 ```
 
 ### CLI Options
@@ -38,7 +38,7 @@ python src/table_functions_postgres.py data/raw/earthquakes/ --pretty  # All fil
 
 ```bash
 # 1. Run CLI to infer schema
-python src/table_functions_postgres.py data/raw/earthquakes.csv --pretty
+python table_functions_postgres.py data/raw/earthquakes.csv --pretty
 
 # 2. Copy the JSON output and paste as column_mapping in your notebook:
 column_mapping = {
@@ -98,7 +98,7 @@ The CLI output is designed for easy multi-file ingestion with dynamic mappings:
 
 ```python
 # 1. Run CLI on directory
-# python src/table_functions_postgres.py data/raw/my_files/ --pretty > schema.json
+# python table_functions_postgres.py data/raw/my_files/ --pretty > schema.json
 
 # 2. Paste output as all_mappings dict
 all_mappings = {
@@ -217,7 +217,7 @@ update_table(
 
 **For schema inference CLI:**
 ```bash
-python src/table_functions_postgres.py data/file.csv --encoding cp1252 --pretty
+python table_functions_postgres.py data/file.csv --encoding cp1252 --pretty
 ```
 
 **Common encodings:**
@@ -234,7 +234,7 @@ with open('file.csv', 'rb') as f:
     print(result['encoding'])  # e.g., 'Windows-1252'
 ```
 
-See `notebooks/encoding_example.py` for a complete demo.
+See `encoding_example.py` for a complete demo.
 
 ### 3. S3 Support
 
@@ -333,7 +333,7 @@ temp/                 # S3 file cache
 
 Marimo notebooks can be run as Python scripts:
 ```bash
-python notebooks/iris_dataset.py
+python iris_dataset.py
 ```
 
 ### 6. Marimo Setup Cell Pattern
@@ -346,12 +346,6 @@ import marimo
 app = marimo.App(width="medium")
 
 with app.setup:
-    import sys
-    from pathlib import Path
-
-    # Add src directory to path for imports
-    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
     import marimo as mo
     import psycopg
     from table_functions_postgres import add_files_to_metadata_table, update_table
@@ -363,8 +357,6 @@ def _():
     conninfo = "postgresql://user:pass@host/db"
     # ...
 ```
-
-**Note:** The sys.path manipulation ensures imports work when running notebooks as scripts (`python notebooks/notebook.py`) or via `marimo edit/run`.
 
 ### 7. Marimo Cells - Variable Naming
 
@@ -477,12 +469,13 @@ Quick reference for `update_table()` optional parameters:
 5. **Don't** create new data directories - use existing `data/source/` structure
 6. **Don't** add helper functions that wrap simple shell commands - users can just run `rm -rf temp/` or `ls temp/` themselves. Avoid unnecessary abstraction.
 
-## Notebook Locations
+## Example Notebooks
 
-All notebooks are in `notebooks/` directory. **One notebook per dataset.**
+Example marimo notebooks at the top level. **One notebook per dataset.**
 
 - `census_dhc_2020.py` - 2020 Census DHC data ingestion
 - `iris_dataset.py` - UCI Iris dataset
+- `encoding_example.py` - Working with non-UTF-8 encodings
 
 ## Testing
 
@@ -524,7 +517,7 @@ pytest tests/test_table_functions_postgres.py::TestPathUtilities -v
 Reset database and test:
 ```bash
 psql -U tanner -d postgres -c "DROP SCHEMA IF EXISTS raw CASCADE; CREATE SCHEMA raw;"
-python notebooks/iris_dataset.py
+python iris_dataset.py
 ```
 
 Check results:

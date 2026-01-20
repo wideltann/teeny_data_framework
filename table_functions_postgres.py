@@ -262,10 +262,11 @@ def download_s3_file_with_cache(
     if cache_path.exists():
         cached_size = cache_path.stat().st_size
         if cached_size == s3_size:
+            print(f"Cache hit: {cache_path.relative_to(Path.cwd())}")
             return cache_path
 
     # Download from S3 to cache
-    print(f"Downloading {s3_path} -> {cache_path.relative_to(Path.cwd())}")
+    print(f"Downloading: {s3_path} -> {cache_path.relative_to(Path.cwd())}")
     filesystem.get(s3_path, str(cache_path))
 
     return cache_path

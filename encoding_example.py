@@ -5,12 +5,6 @@ app = marimo.App(width="medium")
 
 
 with app.setup:
-    import sys
-    from pathlib import Path
-
-    # Add src directory to path for imports
-    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
     import marimo as mo
     import pandas as pd
     import psycopg
