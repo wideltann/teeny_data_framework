@@ -19,6 +19,7 @@ dependencies = [
   "s3fs>=2024.0.0",
   "sqlglot>=28.6.0",
   "xlsxwriter>=3.2.9",
+  "ruff>=0.14.13",
 ]
 
 [dependency-groups]

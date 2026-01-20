@@ -333,10 +333,40 @@ temp/                 # S3 file cache
 
 Marimo notebooks can be run as Python scripts:
 ```bash
-python census/dhc_2020.py
+python notebooks/iris_dataset.py
 ```
 
-### 6. Marimo Cells - Variable Naming
+### 6. Marimo Setup Cell Pattern
+
+Use `with app.setup:` for imports. This runs before other cells and makes variables available to all cells:
+
+```python
+import marimo
+
+app = marimo.App(width="medium")
+
+with app.setup:
+    import sys
+    from pathlib import Path
+
+    # Add project root to path for imports
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+
+    import marimo as mo
+    import psycopg
+    from src.table_functions_postgres import add_files_to_metadata_table, update_table
+
+
+@app.cell
+def _():
+    # mo, psycopg, add_files_to_metadata_table, update_table are all available here
+    conninfo = "postgresql://user:pass@host/db"
+    # ...
+```
+
+**Note:** Use `Path(__file__)` in the setup cell, not `mo.notebook_dir()` (which isn't available during setup).
+
+### 7. Marimo Cells - Variable Naming
 
 In marimo notebooks, variables must be unique across cells OR prefixed with underscore for private:
 ```python
@@ -351,7 +381,7 @@ def _(conn):
     _cur = conn.cursor()  # private variable
 ```
 
-### 7. SQL in Marimo - Escaping
+### 8. SQL in Marimo - Escaping
 
 When using `mo.sql()`, escape `%` as `%%` in LIKE patterns:
 ```python
@@ -361,7 +391,7 @@ mo.sql("""
 """, engine=conn)
 ```
 
-### 8. DHC Census Files
+### 9. DHC Census Files
 
 DHC files are **pipe-delimited** (`.dhc`) with **no headers**:
 - filetype: `"psv"`
