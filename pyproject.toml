@@ -27,6 +27,3 @@ dev = [
     "pytest>=9.0.2",
     "testcontainers[postgres]>=4.14.0",
 ]
-
-[tool.marimo.runtime]
-pythonpath = ["src"]

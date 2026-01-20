@@ -364,7 +364,7 @@ def _():
     # ...
 ```
 
-**Note:** The sys.path manipulation is needed for running notebooks as scripts (`python notebooks/notebook.py`). When running via `marimo edit/run`, the pythonpath config in pyproject.toml is also used.
+**Note:** The sys.path manipulation ensures imports work when running notebooks as scripts (`python notebooks/notebook.py`) or via `marimo edit/run`.
 
 ### 7. Marimo Cells - Variable Naming
 
