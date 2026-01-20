@@ -7,7 +7,7 @@ app = marimo.App(width="medium")
 with app.setup:
     import marimo as mo
     import psycopg
-    from table_functions_postgres import add_files_to_metadata_table, update_table
+    from table_functions import add_files_to_metadata_table, update_table
 
 
 @app.cell

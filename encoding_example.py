@@ -8,7 +8,7 @@ with app.setup:
     import marimo as mo
     import pandas as pd
     import psycopg
-    from table_functions_postgres import add_files_to_metadata_table, update_table
+    from table_functions import add_files_to_metadata_table, update_table
 
 
 @app.cell
@@ -135,7 +135,7 @@ def _(mo):
     Use the CLI with `--encoding` parameter:
 
     ```bash
-    python src/table_functions_postgres.py     data/landing/encoding_test/restaurants.csv     --encoding cp1252     --pretty
+    python table_functions.py     data/landing/encoding_test/restaurants.csv     --encoding cp1252     --pretty
     ```
     """)
     return
@@ -258,7 +258,7 @@ def _(mo):
 
     ### 3. For Schema Inference
     ```bash
-    python src/table_functions_postgres.py file.csv --encoding cp1252 --pretty
+    python table_functions.py file.csv --encoding cp1252 --pretty
     ```
 
     ### Common Encodings

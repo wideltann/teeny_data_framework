@@ -1,5 +1,5 @@
 """
-Tests for S3 support in table_functions_postgres
+Tests for S3 support in table_functions
 
 Uses unittest.mock to mock s3fs operations
 """
@@ -10,7 +10,7 @@ from unittest.mock import Mock, MagicMock, patch, call
 import tempfile
 
 # Import functions to test
-from table_functions_postgres import (
+from table_functions import (
     is_s3_path,
     get_s3_filesystem,
     get_persistent_temp_dir,
@@ -54,7 +54,7 @@ class TestGetFileMetadataRow:
 
     def test_metadata_from_local_file(self):
         """Test getting metadata from local file"""
-        from table_functions_postgres import get_file_metadata_row
+        from table_functions import get_file_metadata_row
 
         # Create temp CSV file
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".csv") as f:
@@ -85,7 +85,7 @@ class TestGetFileMetadataRow:
 
     def test_metadata_with_error_message(self):
         """Test that error message prevents processing"""
-        from table_functions_postgres import get_file_metadata_row
+        from table_functions import get_file_metadata_row
 
         result = get_file_metadata_row(
             source_path="nonexistent.csv",
@@ -109,7 +109,7 @@ class TestAddFilesWithS3:
 
     def test_add_files_local(self):
         """Test adding local files"""
-        from table_functions_postgres import add_files
+        from table_functions import add_files
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)

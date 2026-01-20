@@ -7,7 +7,7 @@ app = marimo.App(width="medium")
 with app.setup:
     import marimo as mo
     import psycopg
-    from table_functions_postgres import add_files_to_metadata_table, update_table
+    from table_functions import add_files_to_metadata_table, update_table
 
 
 @app.cell
@@ -48,7 +48,7 @@ def _(mo):
     **Example Usage:**
     ```bash
     # For files with headers like "Sepal Length", "Petal Width", "Class Name"
-    python src/table_functions_postgres.py data/your_file.csv --pretty
+    python table_functions.py data/your_file.csv --pretty
     ```
 
     **Output format:**

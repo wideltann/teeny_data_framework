@@ -12,16 +12,16 @@ Use the CLI to automatically infer column types from your data files. This gener
 
 ```bash
 # Infer schema from a single file
-python table_functions_postgres.py <file_path> --pretty
+python table_functions.py <file_path> --pretty
 
 # Infer schema from all files in a directory (output keyed by filename)
-python table_functions_postgres.py <directory_path> --pretty
+python table_functions.py <directory_path> --pretty
 
 # Examples
-python table_functions_postgres.py data/raw/my_file.csv --pretty
-python table_functions_postgres.py data/raw/my_file.psv --filetype psv --pretty
-python table_functions_postgres.py data/raw/my_file.data --no-header --pretty
-python table_functions_postgres.py data/raw/earthquakes/ --pretty  # All files in dir
+python table_functions.py data/raw/my_file.csv --pretty
+python table_functions.py data/raw/my_file.psv --filetype psv --pretty
+python table_functions.py data/raw/my_file.data --no-header --pretty
+python table_functions.py data/raw/earthquakes/ --pretty  # All files in dir
 ```
 
 ### CLI Options
@@ -38,7 +38,7 @@ python table_functions_postgres.py data/raw/earthquakes/ --pretty  # All files i
 
 ```bash
 # 1. Run CLI to infer schema
-python table_functions_postgres.py data/raw/earthquakes.csv --pretty
+python table_functions.py data/raw/earthquakes.csv --pretty
 
 # 2. Copy the JSON output and paste as column_mapping in your notebook:
 column_mapping = {
@@ -98,7 +98,7 @@ The CLI output is designed for easy multi-file ingestion with dynamic mappings:
 
 ```python
 # 1. Run CLI on directory
-# python table_functions_postgres.py data/raw/my_files/ --pretty > schema.json
+# python table_functions.py data/raw/my_files/ --pretty > schema.json
 
 # 2. Paste output as all_mappings dict
 all_mappings = {
@@ -217,7 +217,7 @@ update_table(
 
 **For schema inference CLI:**
 ```bash
-python table_functions_postgres.py data/file.csv --encoding cp1252 --pretty
+python table_functions.py data/file.csv --encoding cp1252 --pretty
 ```
 
 **Common encodings:**
@@ -348,7 +348,7 @@ app = marimo.App(width="medium")
 with app.setup:
     import marimo as mo
     import psycopg
-    from table_functions_postgres import add_files_to_metadata_table, update_table
+    from table_functions import add_files_to_metadata_table, update_table
 
 
 @app.cell
@@ -497,10 +497,10 @@ podman machine start
 pytest tests/ -v
 
 # Run specific test file
-pytest tests/test_table_functions_postgres.py -v
+pytest tests/test_table_functions.py -v
 
 # Run just path utility tests
-pytest tests/test_table_functions_postgres.py::TestPathUtilities -v
+pytest tests/test_table_functions.py::TestPathUtilities -v
 ```
 
 **Test coverage includes:**
