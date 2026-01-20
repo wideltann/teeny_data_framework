@@ -229,6 +229,21 @@ add_files_to_metadata_table(resume=True, ...)
 update_table(resume=True, ...)
 ```
 
+### Archive-Level Resume (Skip Entire Archives)
+
+For large S3 archives, use `expected_archive_file_count` to skip completed archives entirely (no download/open):
+
+```python
+add_files_to_metadata_table(
+    source_dir="s3://bucket/data/",
+    compression_type="zip",
+    expected_archive_file_count=20,  # Expected files per archive
+    resume=True,
+)
+```
+
+Archives with `processed_file_count >= expected_archive_file_count` are marked `Success` and skipped on resume. This creates an `archive_metadata` table to track completion status.
+
 ### Retry Failed Files
 
 ```python
