@@ -4,17 +4,16 @@ __generated_with = "0.19.1"
 app = marimo.App(width="medium")
 
 
-@app.cell
-def _():
+with app.setup:
     import sys
-    import marimo as mo
+    from pathlib import Path
 
     # Add project root to path for imports
-    sys.path.insert(0, str(mo.notebook_dir().parent))
+    sys.path.insert(0, str(Path(__file__).parent.parent))
 
+    import marimo as mo
     import psycopg
     from src.table_functions_postgres import add_files_to_metadata_table, update_table
-    return add_files_to_metadata_table, mo, psycopg, update_table
 
 
 @app.cell

@@ -4,9 +4,21 @@ __generated_with = "0.19.2"
 app = marimo.App(width="medium")
 
 
+with app.setup:
+    import sys
+    from pathlib import Path
+
+    # Add project root to path for imports
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+
+    import marimo as mo
+    import pandas as pd
+    import psycopg
+    from src.table_functions_postgres import add_files_to_metadata_table, update_table
+
+
 @app.cell
 def _():
-    import marimo as mo
     mo.md("""
     # Working with Different Character Encodings
 
@@ -30,25 +42,11 @@ def _():
 
     Will fail to ingest if you use the wrong encoding!
     """)
-    return (mo,)
+    return
 
 
 @app.cell
 def _():
-    import sys
-    import marimo as mo
-    import pandas as pd
-
-    # Add project root to path for imports
-    sys.path.insert(0, str(mo.notebook_dir().parent))
-
-    import psycopg
-    from src.table_functions_postgres import add_files_to_metadata_table, update_table
-    return add_files_to_metadata_table, mo, pd, psycopg, update_table
-
-
-@app.cell
-def _(mo, psycopg):
     # Connection string for all database operations
     conninfo = "postgresql://tanner@localhost:5432/postgres"
 
