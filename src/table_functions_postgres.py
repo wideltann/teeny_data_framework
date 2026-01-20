@@ -957,6 +957,12 @@ def _update_table_impl(
     """Internal implementation of update_table"""
     import time
 
+    # Validate mutually exclusive parameters
+    if column_mapping is not None and column_mapping_fn is not None:
+        raise ValueError("Cannot specify both column_mapping and column_mapping_fn")
+    if output_table is not None and output_table_naming_fn is not None:
+        raise ValueError("Cannot specify both output_table and output_table_naming_fn")
+
     required_params = [source_dir, schema, conninfo, filetype]
     if not custom_read_fn and not column_mapping_fn:
         required_params.append(column_mapping)
