@@ -1017,9 +1017,12 @@ def _update_table_impl(
 
     total_files_to_be_processed = sample if sample else len(file_list)
 
-    logger.info(
-        f"Output {'table' if output_table else 'schema'}: {output_table or schema} | Num files being processed: {total_files_to_be_processed} out of {len(file_list)} {'new files' if resume else 'total files'}"
-    )
+    if total_files_to_be_processed == 0:
+        logger.info("No files to ingest")
+    else:
+        logger.info(
+            f"Output {'table' if output_table else 'schema'}: {output_table or schema} | Num files being processed: {total_files_to_be_processed} out of {len(file_list)} {'new files' if resume else 'total files'}"
+        )
 
     for i, source_path in enumerate(file_list):
         start_time = time.time()
@@ -1127,6 +1130,8 @@ def _update_table_impl(
                     logger.debug(f"Cleaned up cache file: {cache_path}")
                 except Exception as cleanup_error:
                     logger.warning(f"Failed to cleanup cache file {cache_path}: {cleanup_error}")
+
+            logger.info(f"{i + 1}/{total_files_to_be_processed} Ingested {source_path}")
 
         except Exception as e:
             error_str = str(e)
