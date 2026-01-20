@@ -1107,10 +1107,9 @@ class TestSnakeCaseConversion:
 
     def test_snake_case_consecutive_caps(self):
         """Test conversion with consecutive capitals"""
-        assert to_snake_case("HTTPSConnection") == "httpsconnection"
-        assert to_snake_case("XMLParser") == "xmlparser"
-        # Note: consecutive caps stay together without underscores
-        # This is expected behavior
+        # inflection separates acronyms intelligently
+        assert to_snake_case("HTTPSConnection") == "https_connection"
+        assert to_snake_case("XMLParser") == "xml_parser"
 
     def test_snake_case_numbers(self):
         """Test conversion with numbers"""
@@ -1123,13 +1122,14 @@ class TestSnakeCaseConversion:
         assert to_snake_case("") == ""
         assert to_snake_case("a") == "a"
         assert to_snake_case("A") == "a"
-        assert to_snake_case("_") == ""
-        assert to_snake_case("__multiple__underscores__") == "multiple_underscores"
+        # inflection preserves underscores
+        assert to_snake_case("_") == "_"
+        assert to_snake_case("__multiple__underscores__") == "__multiple__underscores__"
 
     def test_snake_case_leading_trailing_spaces(self):
         """Test handling of leading/trailing spaces and underscores"""
-        assert to_snake_case(" FirstName ") == "first_name"
-        assert to_snake_case("_firstName_") == "first_name"
+        assert to_snake_case(" FirstName ") == "_first_name_"
+        assert to_snake_case("_firstName_") == "_first_name_"
 
 
 class TestSchemaInference:
@@ -1287,6 +1287,146 @@ value1,value2,value3,value4,value5
 
         assert "spaced_name" in column_mapping
         assert column_mapping["spaced_name"][0] == ["Spaced Name"]
+
+
+class TestCLIOutputFormat:
+    """Test CLI output format with table_name and column_mapping structure"""
+
+    def test_cli_single_file_output_format(self, temp_dir):
+        """Test CLI output format for single file includes table_name"""
+        import subprocess
+        import json
+
+        # Create a test CSV
+        csv_content = """FirstName,LastName,Age
+John,Doe,30
+Jane,Smith,25
+"""
+        csv_path = temp_dir / "UserData.csv"
+        csv_path.write_text(csv_content)
+
+        # Run CLI
+        result = subprocess.run(
+            ["python", "src/table_functions_postgres.py", str(csv_path), "--pretty"],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+
+        # Check structure: keyed by original filename
+        assert "UserData.csv" in output
+        file_data = output["UserData.csv"]
+
+        # Check table_name is snake_case of stem
+        assert "table_name" in file_data
+        assert file_data["table_name"] == "user_data"
+
+        # Check column_mapping exists
+        assert "column_mapping" in file_data
+        column_mapping = file_data["column_mapping"]
+
+        # Check column mapping content
+        assert "first_name" in column_mapping
+        assert column_mapping["first_name"][0] == ["FirstName"]
+        assert "last_name" in column_mapping
+        assert "age" in column_mapping
+
+    def test_cli_directory_output_format(self, temp_dir):
+        """Test CLI output format for directory includes table_name per file"""
+        import subprocess
+        import json
+
+        # Create test directory with multiple files
+        data_dir = temp_dir / "data"
+        data_dir.mkdir()
+
+        # File 1
+        csv1 = """Name,Value
+foo,1
+bar,2
+"""
+        (data_dir / "SalesData.csv").write_text(csv1)
+
+        # File 2
+        csv2 = """Id,Amount
+100,50.5
+200,75.25
+"""
+        (data_dir / "inventory_items.csv").write_text(csv2)
+
+        # Run CLI on directory
+        result = subprocess.run(
+            ["python", "src/table_functions_postgres.py", str(data_dir), "--pretty"],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+
+        # Check both files are present, keyed by original filename
+        assert "SalesData.csv" in output
+        assert "inventory_items.csv" in output
+
+        # Check SalesData.csv
+        sales = output["SalesData.csv"]
+        assert sales["table_name"] == "sales_data"
+        assert "column_mapping" in sales
+        assert "name" in sales["column_mapping"]
+
+        # Check inventory_items.csv (already snake_case)
+        inventory = output["inventory_items.csv"]
+        assert inventory["table_name"] == "inventory_items"
+        assert "column_mapping" in inventory
+        assert "id" in inventory["column_mapping"]
+        assert "amount" in inventory["column_mapping"]
+
+    def test_cli_output_usable_with_column_mapping_fn(self, temp_dir):
+        """Test that CLI output can be used directly with column_mapping_fn pattern"""
+        import subprocess
+        import json
+        from pathlib import Path
+
+        # Create test files
+        data_dir = temp_dir / "data"
+        data_dir.mkdir()
+
+        csv1 = """ProductName,Price
+Widget,10.99
+Gadget,25.50
+"""
+        (data_dir / "products.csv").write_text(csv1)
+
+        # Get CLI output
+        result = subprocess.run(
+            ["python", "src/table_functions_postgres.py", str(data_dir), "--pretty"],
+            capture_output=True,
+            text=True,
+        )
+
+        output = json.loads(result.stdout)
+
+        # Simulate the pattern from CLAUDE.md
+        all_mappings = output
+
+        def get_column_mapping(file_path):
+            return all_mappings[file_path.name]["column_mapping"]
+
+        def get_table_name(file_path):
+            return all_mappings[file_path.name]["table_name"]
+
+        # Test the functions work correctly
+        test_path = Path(data_dir / "products.csv")
+
+        column_mapping = get_column_mapping(test_path)
+        assert "product_name" in column_mapping
+        assert column_mapping["product_name"][0] == ["ProductName"]
+        assert "price" in column_mapping
+
+        table_name = get_table_name(test_path)
+        assert table_name == "products"
 
 
 # ===== INTEGRATION TESTS =====
@@ -2500,9 +2640,12 @@ class TestCLISchemaInference:
 
         assert result.returncode == 0
         output = json.loads(result.stdout)
-        assert "name" in output
-        assert "age" in output
-        assert "score" in output
+        # Output is keyed by filename with table_name and column_mapping
+        assert "cli_test.csv" in output
+        column_mapping = output["cli_test.csv"]["column_mapping"]
+        assert "name" in column_mapping
+        assert "age" in column_mapping
+        assert "score" in column_mapping
 
     def test_cli_filetype_detection(self, temp_dir):
         """Test CLI auto-detects file type from extension"""
@@ -2521,7 +2664,8 @@ class TestCLISchemaInference:
 
         assert result.returncode == 0
         output = json.loads(result.stdout)
-        assert "name" in output
+        assert "cli_test.psv" in output
+        assert "name" in output["cli_test.psv"]["column_mapping"]
 
     def test_cli_no_header(self, temp_dir):
         """Test CLI with --no-header flag"""
@@ -2539,9 +2683,10 @@ class TestCLISchemaInference:
 
         assert result.returncode == 0
         output = json.loads(result.stdout)
-        assert "col_0" in output
-        assert "col_1" in output
-        assert "col_2" in output
+        column_mapping = output["no_header.csv"]["column_mapping"]
+        assert "col_0" in column_mapping
+        assert "col_1" in column_mapping
+        assert "col_2" in column_mapping
 
     def test_cli_custom_separator(self, temp_dir):
         """Test CLI with custom separator"""
@@ -2561,8 +2706,9 @@ class TestCLISchemaInference:
 
         assert result.returncode == 0
         output = json.loads(result.stdout)
-        assert "name" in output
-        assert "age" in output
+        column_mapping = output["custom_sep.csv"]["column_mapping"]
+        assert "name" in column_mapping
+        assert "age" in column_mapping
 
     def test_cli_sample_rows(self, temp_dir):
         """Test CLI with --sample-rows parameter"""
@@ -2585,8 +2731,9 @@ class TestCLISchemaInference:
 
         assert result.returncode == 0
         output = json.loads(result.stdout)
-        assert "id" in output
-        assert "value" in output
+        column_mapping = output["many_rows.csv"]["column_mapping"]
+        assert "id" in column_mapping
+        assert "value" in column_mapping
 
     def test_cli_file_not_found(self, temp_dir):
         """Test CLI error handling for non-existent file"""
@@ -2623,8 +2770,9 @@ class TestCLISchemaInference:
 
         assert result.returncode == 0
         output = json.loads(result.stdout)
-        assert "name" in output
-        assert "age" in output
+        column_mapping = output["test.parquet"]["column_mapping"]
+        assert "name" in column_mapping
+        assert "age" in column_mapping
 
     def test_cli_directory_mode(self, temp_dir):
         """Test CLI with directory path outputs JSON keyed by filename"""
@@ -2652,11 +2800,18 @@ class TestCLISchemaInference:
         assert "file2.csv" in output
 
         # Check schema for each file
-        assert "name" in output["file1.csv"]
-        assert "age" in output["file1.csv"]
-        assert "id" in output["file2.csv"]
-        assert "value" in output["file2.csv"]
-        assert "score" in output["file2.csv"]
+        file1_mapping = output["file1.csv"]["column_mapping"]
+        assert "name" in file1_mapping
+        assert "age" in file1_mapping
+
+        file2_mapping = output["file2.csv"]["column_mapping"]
+        assert "id" in file2_mapping
+        assert "value" in file2_mapping
+        assert "score" in file2_mapping
+
+        # Check table_name is included
+        assert output["file1.csv"]["table_name"] == "file1"
+        assert output["file2.csv"]["table_name"] == "file2"
 
     def test_cli_directory_mode_with_filetype_filter(self, temp_dir):
         """Test CLI directory mode filters by --filetype"""
@@ -2756,7 +2911,7 @@ class TestCLISchemaInference:
 
         # Good file should have proper schema
         assert "good.csv" in output
-        assert "name" in output["good.csv"]
+        assert "name" in output["good.csv"]["column_mapping"]
 
         # Bad file should have error entry
         assert "bad.csv" in output

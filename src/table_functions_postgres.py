@@ -1758,7 +1758,7 @@ def drop_file_from_metadata_and_table(
 
 def to_snake_case(name: str) -> str:
     """
-    Convert a string to snake_case
+    Convert a string to snake_case using inflection library
 
     Examples:
         "FirstName" -> "first_name"
@@ -1767,23 +1767,13 @@ def to_snake_case(name: str) -> str:
         "totalAmount" -> "total_amount"
     """
     import re
+    import inflection
 
-    # Replace spaces and hyphens with underscores
+    # Replace spaces and hyphens with underscores first
     name = re.sub(r"[\s\-]+", "_", name)
 
-    # Insert underscore before uppercase letters that follow lowercase letters
-    name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
-
-    # Convert to lowercase
-    name = name.lower()
-
-    # Remove any duplicate underscores
-    name = re.sub(r"_+", "_", name)
-
-    # Remove leading/trailing underscores
-    name = name.strip("_")
-
-    return name
+    # Use inflection for the camelCase conversion
+    return inflection.underscore(name)
 
 
 def infer_schema_from_file(
@@ -1978,6 +1968,7 @@ Examples:
                 exit(1)
 
             # Build output dictionary keyed by filename
+            # Include snake_case table name in the value for convenience
             output = {}
             for file_path in files:
                 try:
@@ -1990,7 +1981,10 @@ Examples:
                         excel_skiprows=args.excel_skiprows,
                         sample_rows=args.sample_rows,
                     )
-                    output[file_path.name] = column_mapping
+                    output[file_path.name] = {
+                        "table_name": to_snake_case(file_path.stem),
+                        "column_mapping": column_mapping,
+                    }
                 except Exception as e:
                     print(f"Warning: Failed to infer schema for {file_path.name}: {e}", file=__import__('sys').stderr)
                     output[file_path.name] = {"error": str(e)}
@@ -2002,7 +1996,7 @@ Examples:
                 print(json.dumps(output))
 
         else:
-            # Single file mode (original behavior)
+            # Single file mode - keyed by filename with table_name included
             column_mapping = infer_schema_from_file(
                 file_path=str(input_path),
                 filetype=args.filetype,
@@ -2013,11 +2007,18 @@ Examples:
                 sample_rows=args.sample_rows,
             )
 
+            output = {
+                input_path.name: {
+                    "table_name": to_snake_case(input_path.stem),
+                    "column_mapping": column_mapping,
+                }
+            }
+
             # Output as JSON
             if args.pretty:
-                print(json.dumps(column_mapping, indent=2))
+                print(json.dumps(output, indent=2))
             else:
-                print(json.dumps(column_mapping))
+                print(json.dumps(output))
 
     except Exception as e:
         print(f"Error inferring schema: {e}")

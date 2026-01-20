@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "adbc-driver-postgresql>=1.10.0",
+  "inflection>=0.5.1",
   "duckdb>=1.4.3",
   "fastexcel>=0.18.0",
   "loguru>=0.7.0",

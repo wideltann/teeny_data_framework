@@ -59,18 +59,27 @@ update_table(
 
 ### Output Format
 
-The CLI outputs JSON in the exact `column_mapping` format with **automatic snake_case conversion**:
+The CLI outputs JSON keyed by **original filename** with `table_name` (snake_case) and `column_mapping`:
 
 ```json
 {
-  "snake_case_column": [["OriginalColumnName"], "type_string"],
-  "already_snake": [[], "type_string"],
-  ...
+  "MyDataFile.csv": {
+    "table_name": "my_data_file",
+    "column_mapping": {
+      "snake_case_column": [["OriginalColumnName"], "type_string"],
+      "already_snake": [[], "type_string"]
+    }
+  }
 }
 ```
 
+**Structure:**
+- **Key**: Original filename (for matching in `column_mapping_fn`)
+- **table_name**: Snake_case version of filename stem (for `output_table_naming_fn`)
+- **column_mapping**: Column definitions with automatic snake_case conversion
+
 **Column Name Conversion:**
-- Column names are automatically converted to `snake_case`
+- Column names are automatically converted to `snake_case` using the `inflection` library
 - Original column name is included in the array (e.g., `"FirstName"` becomes `"first_name": [["FirstName"], "string"]`)
 - If the column is already in snake_case, the array is empty (e.g., `"user_id": [[], "int"]`)
 - This allows the framework to match either the snake_case name or the original name when reading files
@@ -83,21 +92,43 @@ The CLI outputs JSON in the exact `column_mapping` format with **automatic snake
 
 **Type strings:** `int`, `float`, `boolean`, `datetime`, `string`
 
-### Directory Mode
+### Multi-File Ingestion Pattern
 
-When you provide a directory path, the CLI outputs a JSON object keyed by filename:
+The CLI output is designed for easy multi-file ingestion with dynamic mappings:
 
-```json
-{
-  "file1.csv": {
-    "column_a": [[], "string"],
-    "column_b": [[], "int"]
-  },
-  "file2.csv": {
-    "col_x": [[], "float"],
-    "col_y": [["ColY"], "string"]
-  }
+```python
+# 1. Run CLI on directory
+# python src/table_functions_postgres.py data/raw/my_files/ --pretty > schema.json
+
+# 2. Paste output as all_mappings dict
+all_mappings = {
+    "sales.csv": {
+        "table_name": "sales",
+        "column_mapping": {"date": [[], "datetime"], "amount": [[], "float"]}
+    },
+    "customers.csv": {
+        "table_name": "customers",
+        "column_mapping": {"name": [[], "string"], "email": [[], "string"]}
+    },
 }
+
+# 3. Define lookup functions
+def get_column_mapping(file_path):
+    return all_mappings[file_path.name]["column_mapping"]
+
+def get_table_name(file_path):
+    return all_mappings[file_path.name]["table_name"]
+
+# 4. Single update_table() call for all files
+update_table(
+    conninfo="postgresql://user:pass@host/db",
+    schema="raw",
+    output_table="unused",  # ignored when using output_table_naming_fn
+    filetype="csv",
+    source_dir="data/raw/my_files/",
+    column_mapping_fn=get_column_mapping,
+    output_table_naming_fn=get_table_name,
+)
 ```
 
 - Processes all files matching the filetype (or all supported types if not specified)
