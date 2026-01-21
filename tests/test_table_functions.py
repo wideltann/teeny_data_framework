@@ -2933,17 +2933,16 @@ class TestCLISchemaInference:
         assert "col_1" in column_mapping
         assert "col_2" in column_mapping
 
-    def test_cli_custom_separator(self, temp_dir):
-        """Test CLI with custom separator"""
+    def test_cli_auto_detects_separator(self, temp_dir):
+        """Test CLI auto-detects custom separator (semicolon)"""
         import subprocess
 
-        # Create file with custom separator
+        # Create file with semicolon separator - DuckDB should auto-detect
         csv_path = temp_dir / "custom_sep.csv"
         csv_path.write_text("name;age;score\nAlice;25;85.5\n")
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(csv_path),
-             "--separator", ";"],
+            ["python", "table_functions.py", str(csv_path)],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,

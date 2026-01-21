@@ -2057,7 +2057,6 @@ def _map_duckdb_type(duckdb_type: str) -> str:
 def infer_schema_from_file(
     file_path: str,
     filetype: Optional[str] = None,
-    separator: str = ",",
     has_header: bool = True,
     encoding: Optional[str] = None,
     excel_skiprows: int = 0,
@@ -2068,12 +2067,13 @@ def infer_schema_from_file(
 
     Args:
         file_path: Path to the file
-        filetype: File type (csv, tsv, psv, xlsx, parquet)
-        separator: Delimiter for text files (only used for csv filetype)
+        filetype: File type (csv, tsv, psv, xlsx, parquet). If None, auto-detects from extension.
         has_header: Whether the file has a header row
         encoding: File encoding. If None, auto-detects (tries UTF-8, falls back to latin-1+ftfy)
         excel_skiprows: Rows to skip in Excel files
         sample_rows: Number of rows to sample for type inference (None = read entire file)
+
+    Note: For CSV/TSV/PSV files, the delimiter is auto-detected by DuckDB.
 
     Returns:
         Dictionary with:
@@ -2105,14 +2105,6 @@ def infer_schema_from_file(
                 file_content = f.read()
             detected_encoding = encoding
 
-        # Determine separator
-        if filetype == "tsv":
-            sep = "\t"
-        elif filetype == "psv":
-            sep = "|"
-        else:
-            sep = separator
-
         # Write UTF-8 content to temp file for DuckDB
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, encoding="utf-8") as f:
             f.write(file_content)
@@ -2122,9 +2114,9 @@ def infer_schema_from_file(
             conn = duckdb.connect()
 
             # Build sniff_csv options
-            # Default to reading all rows (-1) for accurate type inference
-            # User can override with --sample-rows for faster inference on large files
-            sniff_opts = [f"delim='{sep}'", f"sample_size={sample_rows if sample_rows else -1}"]
+            # Let DuckDB auto-detect delimiter, read all rows for accurate type inference
+            # null_padding=true handles rows with fewer columns than header
+            sniff_opts = [f"sample_size={sample_rows if sample_rows else -1}", "null_padding=true"]
             if not has_header:
                 sniff_opts.append("header=false")
 
@@ -2204,12 +2196,13 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python src/table_functions_postgres.py data/raw/my_file.csv
-  python src/table_functions_postgres.py data/raw/my_file.csv --filetype csv --separator ","
-  python src/table_functions_postgres.py data/raw/my_file.psv --filetype psv
-  python src/table_functions_postgres.py data/raw/my_file.xlsx --filetype xlsx --no-header
-  python src/table_functions_postgres.py data/raw/my_file.parquet --sample-rows 5000
-  python src/table_functions_postgres.py data/raw/ --pretty  # Infer all files in directory
+  python table_functions.py data/raw/my_file.csv
+  python table_functions.py data/raw/my_file.psv
+  python table_functions.py data/raw/my_file.xlsx --no-header
+  python table_functions.py data/raw/my_file.parquet --sample-rows 5000
+  python table_functions.py data/raw/  # Infer all files in directory
+
+Note: Delimiter is auto-detected by DuckDB for CSV/TSV/PSV files.
         """,
     )
 
@@ -2222,12 +2215,6 @@ Examples:
         "--filetype",
         choices=["csv", "tsv", "psv", "xlsx", "parquet"],
         help="File type (auto-detected from extension if not provided)",
-    )
-
-    parser.add_argument(
-        "--separator",
-        default=",",
-        help="Column separator for text files (default: ',')",
     )
 
     parser.add_argument(
@@ -2289,7 +2276,6 @@ Examples:
                     result = infer_schema_from_file(
                         file_path=str(file_path),
                         filetype=args.filetype,
-                        separator=args.separator,
                         has_header=not args.no_header,
                         excel_skiprows=args.excel_skiprows,
                         sample_rows=args.sample_rows,
@@ -2316,7 +2302,6 @@ Examples:
             result = infer_schema_from_file(
                 file_path=str(input_path),
                 filetype=args.filetype,
-                separator=args.separator,
                 has_header=not args.no_header,
                 excel_skiprows=args.excel_skiprows,
                 sample_rows=args.sample_rows,

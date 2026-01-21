@@ -27,12 +27,11 @@ python table_functions.py data/earthquakes/  # All files in dir
 ### CLI Options
 
 - `--filetype {csv,tsv,psv,xlsx,parquet}` - File type (auto-detected from extension)
-- `--separator ","` - Column separator for text files (only used with csv filetype)
 - `--no-header` - File has no header row (generates col_0, col_1, etc.)
 - `--excel-skiprows N` - Rows to skip in Excel files
 - `--sample-rows N` - Number of rows to sample for type inference (default: read entire file)
 
-**Note:** Encoding is auto-detected. The framework tries UTF-8 first, then falls back to latin-1 + ftfy for files with non-UTF-8 bytes.
+**Note:** Delimiter and encoding are auto-detected by DuckDB. The framework tries UTF-8 first, then falls back to latin-1 + ftfy for files with non-UTF-8 bytes.
 
 ### Workflow
 
