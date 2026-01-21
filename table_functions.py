@@ -2005,7 +2005,8 @@ def decode_file_content(file_path: str) -> Dict[str, Any]:
             "raw_bytes": raw_bytes,
         }
     except UnicodeDecodeError:
-        pass
+        import sys
+        print(f"UTF-8 decoding failed for {file_path}, falling back to latin-1 + ftfy", file=sys.stderr)
 
     # Fall back to latin-1 + ftfy
     # latin-1 can decode any byte (0x00-0xFF map to U+0000-U+00FF)
