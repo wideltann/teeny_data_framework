@@ -1953,19 +1953,21 @@ def drop_file_from_metadata_and_table(
 # CLI SCHEMA INFERENCE FUNCTIONS
 
 
-def detect_encoding(file_path: str) -> Dict[str, Any]:
+def detect_encoding(file_path: str, return_bytes: bool = False) -> Dict[str, Any]:
     """
     Detect file encoding using chardet
 
     Args:
         file_path: Path to the file
+        return_bytes: If True, include raw bytes in return dict for reuse
 
     Returns:
         Dictionary with:
         {
             "encoding": "utf-8",      # Detected encoding (normalized)
             "confidence": 0.99,       # Confidence score (0-1)
-            "raw_encoding": "UTF-8-SIG"  # Original chardet output
+            "raw_encoding": "UTF-8-SIG",  # Original chardet output
+            "raw_bytes": b"..."       # Only if return_bytes=True
         }
     """
     import chardet
@@ -1988,11 +1990,16 @@ def detect_encoding(file_path: str) -> Dict[str, Any]:
     }
     encoding = encoding_map.get(encoding, encoding)
 
-    return {
+    output = {
         "encoding": encoding,
         "confidence": result["confidence"] or 0.0,
         "raw_encoding": raw_encoding,
     }
+
+    if return_bytes:
+        output["raw_bytes"] = raw_data
+
+    return output
 
 
 def to_snake_case(name: str) -> str:
@@ -2049,6 +2056,8 @@ def infer_schema_from_file(
             "encoding": "utf-8" (only if detect_encoding_flag is True)
         }
     """
+    from io import StringIO
+
     path = Path(file_path)
 
     # Auto-detect filetype from extension if not provided
@@ -2056,45 +2065,92 @@ def infer_schema_from_file(
         ext = path.suffix.lower().lstrip(".")
         filetype = ext if ext in ["csv", "tsv", "psv", "xlsx", "parquet"] else "csv"
 
-    # Handle encoding detection/defaults
-    detected_encoding_info = None
-    if filetype in ["csv", "tsv", "psv"]:  # Only detect for text files
-        if detect_encoding_flag or encoding is None:
-            detected_encoding_info = detect_encoding(file_path)
-            if encoding is None:
-                encoding = detected_encoding_info["encoding"]
-    if encoding is None:
-        encoding = "utf-8-sig"  # Default for xlsx or if detection wasn't needed
-
     # Common null value representations to detect
     COMMON_NULL_VALUES = {"NA", "N/A", "n/a", "None", "none", "NULL", "null", "NaN", "nan", ".", "-", ""}
 
-    # Read file with pandas type inference (keep_default_na=False to see raw values)
-    df_raw = None
+    # Handle encoding detection and file reading
+    detected_encoding_info = None
+    file_content = None  # For reusing file content
 
     if filetype in ["csv", "tsv", "psv"]:
+        # For text files: detect encoding and read file once
+        if detect_encoding_flag or encoding is None:
+            # Read file once, get both encoding and bytes
+            detected_encoding_info = detect_encoding(file_path, return_bytes=True)
+            raw_bytes = detected_encoding_info.pop("raw_bytes")  # Remove from info dict
+            if encoding is None:
+                encoding = detected_encoding_info["encoding"]
+            # Decode bytes to string for pandas
+            file_content = raw_bytes.decode(encoding)
+        else:
+            # Encoding provided, just read the file
+            with open(file_path, "r", encoding=encoding) as f:
+                file_content = f.read()
+
         # Determine separator
         if filetype == "tsv":
             separator = "\t"
         elif filetype == "psv":
             separator = "|"
 
-        # First read with keep_default_na=False to detect null patterns
+        # Single read: get raw strings for null detection
         df_raw = pd.read_csv(
-            file_path,
+            StringIO(file_content),
             sep=separator,
             header=0 if has_header else None,
-            encoding=encoding,
             nrows=sample_rows,
             keep_default_na=False,
-            dtype=str,  # Read everything as string to detect null patterns
+            dtype=str,
         )
 
-        # If no header, generate column names
         if not has_header:
             df_raw.columns = [f"col_{i}" for i in range(len(df_raw.columns))]
 
+        # Detect null values present in the data
+        detected_nulls = set()
+        for col in df_raw.columns:
+            unique_values = set(df_raw[col].unique())
+            detected_nulls.update(unique_values & COMMON_NULL_VALUES)
+
+        # Replace null values in-place and infer types
+        # This avoids a second file read
+        import warnings
+        for col in df_raw.columns:
+            # Replace null strings with actual NaN
+            df_raw[col] = df_raw[col].replace(list(detected_nulls), pd.NA)
+            # Let pandas infer the best type
+            try:
+                df_raw[col] = pd.to_numeric(df_raw[col])
+            except (ValueError, TypeError):
+                pass  # Keep as-is if not numeric
+            # Try datetime if still object type
+            if df_raw[col].dtype == "object":
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", UserWarning)
+                        converted = pd.to_datetime(df_raw[col], errors="coerce")
+                    # Only use datetime if most values converted successfully
+                    if converted.notna().sum() > len(converted) * 0.5:
+                        df_raw[col] = converted
+                except Exception:
+                    pass
+            # Try boolean
+            if df_raw[col].dtype == "object":
+                unique_vals = set(df_raw[col].dropna().unique())
+                bool_vals = {"true", "false", "True", "False", "TRUE", "FALSE", "0", "1"}
+                if unique_vals and unique_vals.issubset(bool_vals):
+                    df_raw[col] = df_raw[col].map(
+                        {"true": True, "false": False, "True": True, "False": False,
+                         "TRUE": True, "FALSE": False, "1": True, "0": False}
+                    ).astype("boolean")
+
+        df = df_raw
+
     elif filetype == "xlsx":
+        if encoding is None:
+            encoding = "utf-8-sig"
+
+        # Excel files: read once as strings
         df_raw = pd.read_excel(
             file_path,
             skiprows=excel_skiprows,
@@ -2102,6 +2158,32 @@ def infer_schema_from_file(
             keep_default_na=False,
             dtype=str,
         )
+
+        # Detect null values
+        detected_nulls = set()
+        for col in df_raw.columns:
+            unique_values = set(df_raw[col].unique())
+            detected_nulls.update(unique_values & COMMON_NULL_VALUES)
+
+        # Replace nulls and infer types in-place
+        import warnings
+        for col in df_raw.columns:
+            df_raw[col] = df_raw[col].replace(list(detected_nulls), pd.NA)
+            try:
+                df_raw[col] = pd.to_numeric(df_raw[col])
+            except (ValueError, TypeError):
+                pass
+            if df_raw[col].dtype == "object":
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", UserWarning)
+                        converted = pd.to_datetime(df_raw[col], errors="coerce")
+                    if converted.notna().sum() > len(converted) * 0.5:
+                        df_raw[col] = converted
+                except Exception:
+                    pass
+
+        df = df_raw
 
     elif filetype == "parquet":
         # Parquet already has type information and proper nulls
@@ -2126,12 +2208,6 @@ def infer_schema_from_file(
     else:
         raise ValueError(f"Unsupported filetype: {filetype}")
 
-    # Detect null values present in the data
-    detected_nulls = set()
-    for col in df_raw.columns:
-        unique_values = set(df_raw[col].unique())
-        detected_nulls.update(unique_values & COMMON_NULL_VALUES)
-
     # Convert detected nulls to sorted list (or None if only empty string or nothing)
     null_values_list = sorted(detected_nulls) if detected_nulls else None
     # Filter out empty string from the reported list (it's handled specially by pandas)
@@ -2139,27 +2215,6 @@ def infer_schema_from_file(
         null_values_list = [v for v in null_values_list if v != ""]
         if not null_values_list:
             null_values_list = None
-
-    # Now re-read with proper null handling for type inference
-    if filetype in ["csv", "tsv", "psv"]:
-        df = pd.read_csv(
-            file_path,
-            sep=separator,
-            header=0 if has_header else None,
-            encoding=encoding,
-            nrows=sample_rows,
-            na_values=list(detected_nulls) if detected_nulls else None,
-            low_memory=False,  # Avoid mixed type warnings
-        )
-        if not has_header:
-            df.columns = [f"col_{i}" for i in range(len(df.columns))]
-    else:  # xlsx
-        df = pd.read_excel(
-            file_path,
-            skiprows=excel_skiprows,
-            nrows=sample_rows,
-            na_values=list(detected_nulls) if detected_nulls else None,
-        )
 
     # Build column mapping from inferred types
     column_mapping = {}
