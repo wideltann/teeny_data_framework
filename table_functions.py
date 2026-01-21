@@ -2083,8 +2083,6 @@ def infer_schema_from_file(
             "encoding": "utf-8" or "latin-1+ftfy"
         }
     """
-    import tempfile
-
     path = Path(file_path)
 
     # Auto-detect filetype from extension if not provided
@@ -2105,43 +2103,44 @@ def infer_schema_from_file(
                 file_content = f.read()
             detected_encoding = encoding
 
-        # Write UTF-8 content to temp file for DuckDB
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, encoding="utf-8") as f:
-            f.write(file_content)
-            tmp_path = f.name
+        # If file needed ftfy fixing, save UTF-8 version to temp/ for reuse
+        # Otherwise just use the original file directly
+        if detected_encoding == "latin-1+ftfy":
+            temp_dir = get_persistent_temp_dir()
+            fixed_path = temp_dir / (path.stem + "_fixed" + path.suffix)
+            fixed_path.write_text(file_content, encoding="utf-8")
+            sniff_path = str(fixed_path)
+        else:
+            sniff_path = file_path
 
-        try:
-            conn = duckdb.connect()
+        conn = duckdb.connect()
 
-            # Build sniff_csv options
-            sample_size = sample_rows or -1
-            sniff_opts = f"sample_size={sample_size}, null_padding=true"
-            if not has_header:
-                sniff_opts += ", header=false"
+        # Build sniff_csv options
+        sample_size = sample_rows or -1
+        sniff_opts = f"sample_size={sample_size}, null_padding=true"
+        if not has_header:
+            sniff_opts += ", header=false"
 
-            result = conn.execute(f"SELECT * FROM sniff_csv('{tmp_path}', {sniff_opts})").fetchone()
+        result = conn.execute(f"SELECT * FROM sniff_csv('{sniff_path}', {sniff_opts})").fetchone()
 
-            # Schema is at index 7
-            schema = result[7]
+        # Schema is at index 7
+        schema = result[7]
 
-            # Build column mapping
-            column_mapping = {}
-            for i, col_info in enumerate(schema):
-                original_col = col_info["name"] if has_header else f"col_{i}"
-                # Strip surrounding quotes (pandas does this automatically, DuckDB doesn't)
-                original_col = original_col.strip('"')
-                type_string = _map_duckdb_type(col_info["type"])
-                snake_case_col = to_snake_case(original_col)
+        # Build column mapping
+        column_mapping = {}
+        for i, col_info in enumerate(schema):
+            original_col = col_info["name"] if has_header else f"col_{i}"
+            # Strip surrounding quotes (pandas does this automatically, DuckDB doesn't)
+            original_col = original_col.strip('"')
+            type_string = _map_duckdb_type(col_info["type"])
+            snake_case_col = to_snake_case(original_col)
 
-                if snake_case_col == original_col:
-                    column_mapping[snake_case_col] = ([], type_string)
-                else:
-                    column_mapping[snake_case_col] = ([original_col], type_string)
+            if snake_case_col == original_col:
+                column_mapping[snake_case_col] = ([], type_string)
+            else:
+                column_mapping[snake_case_col] = ([original_col], type_string)
 
-            conn.close()
-        finally:
-            import os
-            os.unlink(tmp_path)
+        conn.close()
 
         return {"column_mapping": column_mapping, "null_values": None, "encoding": detected_encoding}
 
