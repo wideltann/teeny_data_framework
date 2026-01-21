@@ -2114,14 +2114,12 @@ def infer_schema_from_file(
             conn = duckdb.connect()
 
             # Build sniff_csv options
-            # Let DuckDB auto-detect delimiter, read all rows for accurate type inference
-            # null_padding=true handles rows with fewer columns than header
-            sniff_opts = [f"sample_size={sample_rows if sample_rows else -1}", "null_padding=true"]
+            sample_size = sample_rows or -1
+            sniff_opts = f"sample_size={sample_size}, null_padding=true, quote='\"'"
             if not has_header:
-                sniff_opts.append("header=false")
+                sniff_opts += ", header=false"
 
-            opts_str = ", ".join(sniff_opts)
-            result = conn.execute(f"SELECT * FROM sniff_csv('{tmp_path}', {opts_str})").fetchone()
+            result = conn.execute(f"SELECT * FROM sniff_csv('{tmp_path}', {sniff_opts})").fetchone()
 
             # Schema is at index 7
             schema = result[7]
