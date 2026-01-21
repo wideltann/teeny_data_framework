@@ -2288,8 +2288,10 @@ Examples:
             # Build output dictionary keyed by filename
             # Include snake_case table name in the value for convenience
             output = {}
-            for file_path in files:
+            total_files = len(files)
+            for i, file_path in enumerate(files):
                 try:
+                    print(f"{i + 1}/{total_files} Inferring schema: {file_path.name}", file=sys.stderr)
                     result = infer_schema_from_file(
                         file_path=str(file_path),
                         filetype=args.filetype,
@@ -2311,7 +2313,7 @@ Examples:
                         file_output["encoding_confidence"] = result.get("encoding_confidence")
                     output[file_path.name] = file_output
                 except Exception as e:
-                    print(f"Warning: Failed to infer schema for {file_path.name}: {e}", file=sys.stderr)
+                    print(f"{i + 1}/{total_files} Failed: {file_path.name} - {e}", file=sys.stderr)
                     output[file_path.name] = {"error": str(e)}
 
             # Output as JSON (pretty-printed)
@@ -2319,6 +2321,7 @@ Examples:
 
         else:
             # Single file mode - keyed by filename with table_name included
+            print(f"Inferring schema: {input_path.name}", file=sys.stderr)
             result = infer_schema_from_file(
                 file_path=str(input_path),
                 filetype=args.filetype,
