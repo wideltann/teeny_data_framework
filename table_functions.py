@@ -2118,7 +2118,7 @@ def infer_schema_from_file(
 
         # Build sniff_csv options
         sample_size = sample_rows or -1
-        sniff_opts = f"sample_size={sample_size}, null_padding=true"
+        sniff_opts = f"sample_size={sample_size}, null_padding=true, strict_mode=false"
         if not has_header:
             sniff_opts += ", header=false"
 
