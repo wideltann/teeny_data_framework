@@ -2115,7 +2115,7 @@ def infer_schema_from_file(
 
             # Build sniff_csv options
             sample_size = sample_rows or -1
-            sniff_opts = f"sample_size={sample_size}, null_padding=true, quote='\"'"
+            sniff_opts = f"sample_size={sample_size}, null_padding=true"
             if not has_header:
                 sniff_opts += ", header=false"
 
@@ -2128,6 +2128,8 @@ def infer_schema_from_file(
             column_mapping = {}
             for i, col_info in enumerate(schema):
                 original_col = col_info["name"] if has_header else f"col_{i}"
+                # Strip surrounding quotes (pandas does this automatically, DuckDB doesn't)
+                original_col = original_col.strip('"')
                 type_string = _map_duckdb_type(col_info["type"])
                 snake_case_col = to_snake_case(original_col)
 
