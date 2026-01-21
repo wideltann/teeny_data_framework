@@ -3295,6 +3295,41 @@ class TestCLISchemaInference:
         encoding = output["windows.csv"]["encoding"]
         assert encoding in ["cp1252", "latin-1", "iso_8859_1", "windows_1252"]
 
+    def test_cli_encoding_detection_non_ascii_late_in_file(self, temp_dir):
+        """Test CLI detects encoding when non-ASCII bytes appear late in file"""
+        import subprocess
+
+        csv_file = temp_dir / "late_special.csv"
+        # Create file with 200KB of ASCII data followed by CP1252 characters
+        # This ensures detection reads the whole file, not just the first 100KB
+        ascii_rows = b"id,name,value\n" + b"".join(
+            f"{i},item_{i},{i * 10}\n".encode("ascii") for i in range(10000)
+        )
+        # Add rows with CP1252 characters at the end (é=0xe9, ü=0xfc, ó=0xf3)
+        special_rows = b"10001,Caf\xe9,100\n10002,M\xfcnchen,200\n10003,Espa\xf1ol,300\n"
+        csv_file.write_bytes(ascii_rows + special_rows)
+
+        result = subprocess.run(
+            ["python", "table_functions.py", str(csv_file)],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+
+        # Should successfully detect and parse with correct encoding
+        assert "late_special.csv" in output
+        assert "encoding" in output["late_special.csv"]
+        # Should detect an 8-bit encoding (not UTF-8) that can handle the bytes
+        encoding = output["late_special.csv"]["encoding"]
+        assert encoding != "utf_8" and encoding != "ascii", \
+            f"Expected non-UTF8 encoding, got {encoding}"
+        # Should have successfully inferred the schema (not errored)
+        assert "column_mapping" in output["late_special.csv"]
+        assert "id" in output["late_special.csv"]["column_mapping"]
+
 
 # ===== CONNECTION AND SQL HELPER TESTS =====
 
