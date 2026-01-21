@@ -2103,11 +2103,12 @@ def infer_schema_from_file(
                 file_content = f.read()
             detected_encoding = encoding
 
-        # If file needed ftfy fixing, save UTF-8 version to temp/ for reuse
+        # If file needed ftfy fixing, save UTF-8 version to temp/encoding_fixed/ for reuse
         # Otherwise just use the original file directly
         if detected_encoding == "latin-1+ftfy":
-            temp_dir = get_persistent_temp_dir()
-            fixed_path = temp_dir / (path.stem + "_fixed" + path.suffix)
+            fixed_dir = get_persistent_temp_dir() / "encoding_fixed"
+            fixed_dir.mkdir(exist_ok=True)
+            fixed_path = fixed_dir / (path.stem + "_fixed" + path.suffix)
             fixed_path.write_text(file_content, encoding="utf-8")
             sniff_path = str(fixed_path)
         else:
