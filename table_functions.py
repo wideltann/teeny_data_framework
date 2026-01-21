@@ -423,7 +423,7 @@ def read_csv(
     column_mapping: Optional[Dict[str, Tuple[List[str], str]]] = None,
     header: Optional[List[str]] = None,
     has_header: bool = False,
-    null_value: Optional[str] = None,
+    null_values: Optional[List[str]] = None,
     separator: str = ",",
     encoding: str = "utf-8-sig",
 ) -> pd.DataFrame:
@@ -446,16 +446,45 @@ def read_csv(
         header, column_mapping
     )
 
-    df = pd.read_csv(
-        full_path,
-        sep=separator,
-        header=0 if has_header else None,
-        names=header if not has_header else None,
-        dtype=read_dtypes,
-        na_values=null_value,
-        keep_default_na=False if null_value == "" else True,
-        encoding=encoding,
-    )
+    # Determine keep_default_na: False only if "" is explicitly in null_values
+    keep_default_na = True
+    if null_values is not None and "" in null_values:
+        keep_default_na = False
+
+    try:
+        df = pd.read_csv(
+            full_path,
+            sep=separator,
+            header=0 if has_header else None,
+            names=header if not has_header else None,
+            dtype=read_dtypes,
+            na_values=null_values,
+            keep_default_na=keep_default_na,
+            encoding=encoding,
+        )
+    except (ValueError, TypeError) as e:
+        # Try to identify which column caused the error by reading without dtypes
+        df_raw = pd.read_csv(
+            full_path,
+            sep=separator,
+            header=0 if has_header else None,
+            names=header if not has_header else None,
+            na_values=null_values,
+            keep_default_na=keep_default_na,
+            encoding=encoding,
+        )
+        for col, dtype in read_dtypes.items():
+            if col in df_raw.columns:
+                try:
+                    df_raw[col].astype(dtype)
+                except (ValueError, TypeError):
+                    # Get sample of values that failed conversion
+                    sample_values = df_raw[col].unique()[:20]
+                    raise ValueError(
+                        f"Column '{col}' cannot be converted to {dtype}. "
+                        f"Sample values: {list(sample_values)}"
+                    ) from e
+        raise
 
     return _apply_column_transforms(df, rename_dict, missing_cols)
 
@@ -508,7 +537,7 @@ def read_using_column_mapping(
     column_mapping: Optional[Dict[str, Any]] = None,
     header: Optional[List[str]] = None,
     has_header: bool = False,
-    null_value: Optional[str] = None,
+    null_values: Optional[List[str]] = None,
     excel_skiprows: int = 0,
     encoding: str = "utf-8-sig",
 ) -> Optional[pd.DataFrame]:
@@ -523,7 +552,7 @@ def read_using_column_mapping(
                 has_header=has_header,
                 header=header,
                 separator=",",
-                null_value=null_value,
+                null_values=null_values,
                 encoding=encoding,
             )
         case "tsv":
@@ -533,7 +562,7 @@ def read_using_column_mapping(
                 has_header=has_header,
                 header=header,
                 separator="\t",
-                null_value=null_value,
+                null_values=null_values,
                 encoding=encoding,
             )
         case "psv":
@@ -543,7 +572,7 @@ def read_using_column_mapping(
                 has_header=has_header,
                 header=header,
                 separator="|",
-                null_value=null_value,
+                null_values=null_values,
                 encoding=encoding,
             )
         case "xlsx":
@@ -863,7 +892,7 @@ def update_table(
     ] = None,
     pivot_mapping: Optional[Dict[str, Any]] = None,
     header_fn: Optional[Callable[[Path], List[str]]] = None,
-    null_value: str = "",
+    null_values: Optional[List[str]] = None,
     excel_skiprows: int = 0,
     encoding: str = "utf-8-sig",
     cleanup: bool = False,
@@ -909,7 +938,7 @@ def update_table(
             column_mapping_fn=column_mapping_fn,
             pivot_mapping=pivot_mapping,
             header_fn=header_fn,
-            null_value=null_value,
+            null_values=null_values,
             excel_skiprows=excel_skiprows,
             encoding=encoding,
             cleanup=cleanup,
@@ -942,7 +971,7 @@ def _update_table_impl(
     ] = None,
     pivot_mapping: Optional[Dict[str, Any]] = None,
     header_fn: Optional[Callable[[Path], List[str]]] = None,
-    null_value: str = "",
+    null_values: Optional[List[str]] = None,
     excel_skiprows: int = 0,
     encoding: str = "utf-8-sig",
     cleanup: bool = False,
@@ -1047,7 +1076,7 @@ def _update_table_impl(
                     column_mapping=column_mapping_use,
                     header=header,
                     has_header=has_header,
-                    null_value=null_value,
+                    null_values=null_values,
                     excel_skiprows=excel_skiprows,
                     encoding=encoding,
                 )

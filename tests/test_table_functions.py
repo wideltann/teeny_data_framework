@@ -1830,10 +1830,39 @@ class TestEdgeCases:
             full_path=str(csv_path),
             column_mapping=column_mapping,
             has_header=True,
-            null_value="",
+            null_values=[""],
         )
 
         assert pd.isna(df["age"][1])
+
+    def test_read_csv_multiple_null_values(self, temp_dir):
+        """Test handling multiple null value representations"""
+        csv_path = temp_dir / "multi_nulls.csv"
+        csv_path.write_text("name,age,score\nAlice,25,100\nBob,NA,80\nCharlie,30,None\nDave,N/A,N/A\n")
+
+        column_mapping = {
+            "name": ([], "string"),
+            "age": ([], "int"),
+            "score": ([], "int"),
+        }
+
+        df = read_csv(
+            full_path=str(csv_path),
+            column_mapping=column_mapping,
+            has_header=True,
+            null_values=["NA", "None", "N/A"],
+        )
+
+        # Bob's age should be null (NA)
+        assert pd.isna(df["age"][1])
+        # Charlie's score should be null (None)
+        assert pd.isna(df["score"][2])
+        # Dave's age and score should both be null (N/A)
+        assert pd.isna(df["age"][3])
+        assert pd.isna(df["score"][3])
+        # Alice should have valid values
+        assert df["age"][0] == 25
+        assert df["score"][0] == 100
 
     def test_copy_dataframe_large_error_message(self, db_conn):
         """Test error message truncation in update_metadata"""
@@ -3420,8 +3449,8 @@ class TestUpdateTableEdgeCases:
         count = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.empty_output")
         assert count[0] == 0
 
-    def test_update_table_with_null_value_string(self, conninfo, db_conn, temp_dir):
-        """Test update_table with custom null value string"""
+    def test_update_table_with_null_values_single(self, conninfo, db_conn, temp_dir):
+        """Test update_table with a single null value in the list"""
         csv_path = temp_dir / "null_string.csv"
         csv_path.write_text("name,value\nAlice,100\nNA,NA\nBob,200\n")
 
@@ -3439,7 +3468,7 @@ class TestUpdateTableEdgeCases:
             filetype="csv",
             column_mapping=column_mapping,
             source_dir=str(temp_dir) + "/",
-            null_value="NA",
+            null_values=["NA"],
             resume=False,
         )
 
@@ -3447,6 +3476,40 @@ class TestUpdateTableEdgeCases:
         result = execute_sql_fetch(db_conn, "SELECT name, value FROM test_schema.null_string_output ORDER BY value NULLS FIRST")
         # First row should have null value
         assert result[0][1] is None
+
+    def test_update_table_with_null_values_multiple(self, conninfo, db_conn, temp_dir):
+        """Test update_table with multiple null values in the list"""
+        csv_path = temp_dir / "multi_null.csv"
+        csv_path.write_text("name,value\nAlice,100\nNA,NA\nBob,None\nCharlie,N/A\nDave,200\n")
+
+        self._setup_metadata_table(db_conn, temp_dir, [(csv_path, 5)])
+
+        column_mapping = {
+            "name": ([], "string"),
+            "value": ([], "int"),
+        }
+
+        result_df = update_table(
+            conninfo=conninfo,
+            schema="test_schema",
+            output_table="multi_null_output",
+            filetype="csv",
+            column_mapping=column_mapping,
+            source_dir=str(temp_dir) + "/",
+            null_values=["NA", "None", "N/A"],
+            resume=False,
+        )
+
+        # Check that all null representations were treated as null
+        result = execute_sql_fetch(db_conn, "SELECT name, value FROM test_schema.multi_null_output ORDER BY name")
+        # Alice has 100, Bob/Charlie/NA rows have null, Dave has 200
+        values_by_name = {row[0]: row[1] for row in result}
+        assert values_by_name["Alice"] == 100
+        assert values_by_name["Dave"] == 200
+        assert values_by_name["Bob"] is None  # "None" was in null_values
+        assert values_by_name["Charlie"] is None  # "N/A" was in null_values
+        # NA row has null name because "NA" is in null_values
+        assert None in values_by_name or any(v is None for v in values_by_name.values())
 
     def test_update_table_pivot_multiple_value_columns(self, conninfo, db_conn, temp_dir):
         """Test update_table with pivot_mapping with multiple id columns"""

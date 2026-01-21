@@ -496,7 +496,7 @@ Quick reference for `update_table()` optional parameters:
 | `pivot_mapping` | `Dict` | Unpivot/melt configuration |
 | `header_fn` | `Callable[[Path], List[str]]` | Custom header for headerless files |
 | `sample` | `int` | Process only N files |
-| `null_value` | `str` | Custom null representation |
+| `null_values` | `List[str]` | Custom null representations (e.g., `["NA", "None", "N/A"]`) |
 | `resume` | `bool` | Skip already-processed files |
 | `retry_failed` | `bool` | Re-process failed files |
 | `cleanup` | `bool` | Delete cached files after successful ingestion |

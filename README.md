@@ -314,6 +314,17 @@ def additional_cols_fn(file):
 update_table(additional_cols_fn=additional_cols_fn, ...)
 ```
 
+### Custom Null Values
+
+Handle multiple null representations in your data:
+
+```python
+update_table(
+    null_values=["NA", "None", "N/A", ""],  # Treat all as null
+    ...
+)
+```
+
 ## Data Directory Structure
 
 ```
