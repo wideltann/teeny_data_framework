@@ -1953,13 +1953,12 @@ def drop_file_from_metadata_and_table(
 # CLI SCHEMA INFERENCE FUNCTIONS
 
 
-def detect_encoding(file_path: str, sample_size: int = 100000) -> Dict[str, Any]:
+def detect_encoding(file_path: str) -> Dict[str, Any]:
     """
     Detect file encoding using chardet
 
     Args:
         file_path: Path to the file
-        sample_size: Number of bytes to read for detection (default: 100KB)
 
     Returns:
         Dictionary with:
@@ -1972,7 +1971,7 @@ def detect_encoding(file_path: str, sample_size: int = 100000) -> Dict[str, Any]
     import chardet
 
     with open(file_path, "rb") as f:
-        raw_data = f.read(sample_size)
+        raw_data = f.read()  # Read entire file for accurate detection
 
     result = chardet.detect(raw_data)
 
