@@ -2039,6 +2039,21 @@ def to_snake_case(name: str) -> str:
     )
 
 
+def _map_duckdb_type(duckdb_type: str) -> str:
+    """Map DuckDB type to our type string"""
+    duckdb_type = duckdb_type.upper()
+    if duckdb_type in ("BIGINT", "INTEGER", "SMALLINT", "TINYINT", "HUGEINT", "UBIGINT", "UINTEGER", "USMALLINT", "UTINYINT"):
+        return "int"
+    elif duckdb_type in ("DOUBLE", "FLOAT", "REAL", "DECIMAL"):
+        return "float"
+    elif duckdb_type in ("DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIME"):
+        return "datetime"
+    elif duckdb_type == "BOOLEAN":
+        return "boolean"
+    else:
+        return "string"
+
+
 def infer_schema_from_file(
     file_path: str,
     filetype: Optional[str] = None,
@@ -2049,12 +2064,12 @@ def infer_schema_from_file(
     sample_rows: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    Infer schema from file using pandas type inference
+    Infer schema from file using DuckDB's fast CSV sniffer for text files.
 
     Args:
         file_path: Path to the file
         filetype: File type (csv, tsv, psv, xlsx, parquet)
-        separator: Delimiter for text files
+        separator: Delimiter for text files (only used for csv filetype)
         has_header: Whether the file has a header row
         encoding: File encoding. If None, auto-detects (tries UTF-8, falls back to latin-1+ftfy)
         excel_skiprows: Rows to skip in Excel files
@@ -2068,7 +2083,7 @@ def infer_schema_from_file(
             "encoding": "utf-8" or "latin-1+ftfy"
         }
     """
-    from io import StringIO
+    import tempfile
 
     path = Path(file_path)
 
@@ -2077,131 +2092,75 @@ def infer_schema_from_file(
         ext = path.suffix.lower().lstrip(".")
         filetype = ext if ext in ["csv", "tsv", "psv", "xlsx", "parquet"] else "csv"
 
-    # Common null value representations to detect
-    COMMON_NULL_VALUES = {"NA", "N/A", "n/a", "None", "none", "NULL", "null", "NaN", "nan", ".", "-", ""}
-
-    # Handle encoding and file reading
-    detected_encoding = None
-    file_content = None  # For reusing file content
-
     if filetype in ["csv", "tsv", "psv"]:
-        # For text files: handle encoding
+        import duckdb
+
+        # Handle encoding: decode to UTF-8 string
         if encoding is None:
-            # Auto-detect: try UTF-8 first, fall back to latin-1+ftfy
             decoded = decode_file_content(file_path)
             file_content = decoded["content"]
             detected_encoding = decoded["encoding"]
         else:
-            # Encoding provided, just read the file
             with open(file_path, "r", encoding=encoding) as f:
                 file_content = f.read()
             detected_encoding = encoding
 
         # Determine separator
         if filetype == "tsv":
-            separator = "\t"
+            sep = "\t"
         elif filetype == "psv":
-            separator = "|"
+            sep = "|"
+        else:
+            sep = separator
 
-        # Single read: get raw strings for null detection
-        df_raw = pd.read_csv(
-            StringIO(file_content),
-            sep=separator,
-            header=0 if has_header else None,
-            nrows=sample_rows,
-            keep_default_na=False,
-            dtype=str,
-        )
+        # Write UTF-8 content to temp file for DuckDB
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, encoding="utf-8") as f:
+            f.write(file_content)
+            tmp_path = f.name
 
-        if not has_header:
-            df_raw.columns = [f"col_{i}" for i in range(len(df_raw.columns))]
+        try:
+            conn = duckdb.connect()
 
-        # Detect null values present in the data
-        detected_nulls = set()
-        for col in df_raw.columns:
-            unique_values = set(df_raw[col].unique())
-            detected_nulls.update(unique_values & COMMON_NULL_VALUES)
+            # Build sniff_csv options
+            # Default to reading all rows (-1) for accurate type inference
+            # User can override with --sample-rows for faster inference on large files
+            sniff_opts = [f"delim='{sep}'", f"sample_size={sample_rows if sample_rows else -1}"]
+            if not has_header:
+                sniff_opts.append("header=false")
 
-        # Replace null values in-place and infer types
-        # This avoids a second file read
-        import warnings
-        for col in df_raw.columns:
-            # Replace null strings with actual NaN
-            df_raw[col] = df_raw[col].replace(list(detected_nulls), pd.NA)
-            # Let pandas infer the best type
-            try:
-                df_raw[col] = pd.to_numeric(df_raw[col])
-            except (ValueError, TypeError):
-                pass  # Keep as-is if not numeric
-            # Try datetime if still object type
-            if df_raw[col].dtype == "object":
-                try:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore", UserWarning)
-                        converted = pd.to_datetime(df_raw[col], errors="coerce")
-                    # Only use datetime if most values converted successfully
-                    if converted.notna().sum() > len(converted) * 0.5:
-                        df_raw[col] = converted
-                except Exception:
-                    pass
-            # Try boolean
-            if df_raw[col].dtype == "object":
-                unique_vals = set(df_raw[col].dropna().unique())
-                bool_vals = {"true", "false", "True", "False", "TRUE", "FALSE", "0", "1"}
-                if unique_vals and unique_vals.issubset(bool_vals):
-                    df_raw[col] = df_raw[col].map(
-                        {"true": True, "false": False, "True": True, "False": False,
-                         "TRUE": True, "FALSE": False, "1": True, "0": False}
-                    ).astype("boolean")
+            opts_str = ", ".join(sniff_opts)
+            result = conn.execute(f"SELECT * FROM sniff_csv('{tmp_path}', {opts_str})").fetchone()
 
-        df = df_raw
+            # Schema is at index 7
+            schema = result[7]
+
+            # Build column mapping
+            column_mapping = {}
+            for i, col_info in enumerate(schema):
+                original_col = col_info["name"] if has_header else f"col_{i}"
+                type_string = _map_duckdb_type(col_info["type"])
+                snake_case_col = to_snake_case(original_col)
+
+                if snake_case_col == original_col:
+                    column_mapping[snake_case_col] = ([], type_string)
+                else:
+                    column_mapping[snake_case_col] = ([original_col], type_string)
+
+            conn.close()
+        finally:
+            import os
+            os.unlink(tmp_path)
+
+        return {"column_mapping": column_mapping, "null_values": None, "encoding": detected_encoding}
 
     elif filetype == "xlsx":
-        if encoding is None:
-            encoding = "utf-8-sig"
-
-        # Excel files: read once as strings
-        df_raw = pd.read_excel(
+        # Excel files: use pandas (DuckDB xlsx support requires extension)
+        df = pd.read_excel(
             file_path,
             skiprows=excel_skiprows,
             nrows=sample_rows,
-            keep_default_na=False,
-            dtype=str,
         )
 
-        # Detect null values
-        detected_nulls = set()
-        for col in df_raw.columns:
-            unique_values = set(df_raw[col].unique())
-            detected_nulls.update(unique_values & COMMON_NULL_VALUES)
-
-        # Replace nulls and infer types in-place
-        import warnings
-        for col in df_raw.columns:
-            df_raw[col] = df_raw[col].replace(list(detected_nulls), pd.NA)
-            try:
-                df_raw[col] = pd.to_numeric(df_raw[col])
-            except (ValueError, TypeError):
-                pass
-            if df_raw[col].dtype == "object":
-                try:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore", UserWarning)
-                        converted = pd.to_datetime(df_raw[col], errors="coerce")
-                    if converted.notna().sum() > len(converted) * 0.5:
-                        df_raw[col] = converted
-                except Exception:
-                    pass
-
-        df = df_raw
-
-    elif filetype == "parquet":
-        # Parquet already has type information and proper nulls
-        df = pd.read_parquet(file_path)
-        if sample_rows:
-            df = df.head(sample_rows)
-
-        # Build column mapping from inferred types
         column_mapping = {}
         for col in df.columns:
             type_string = _infer_column_mapping_type(df[col].dtype)
@@ -2212,45 +2171,28 @@ def infer_schema_from_file(
             else:
                 column_mapping[snake_case_col] = ([original_col], type_string)
 
-        # Parquet is binary format, no encoding needed
+        return {"column_mapping": column_mapping, "null_values": None, "encoding": None}
+
+    elif filetype == "parquet":
+        # Parquet already has type information
+        df = pd.read_parquet(file_path)
+        if sample_rows:
+            df = df.head(sample_rows)
+
+        column_mapping = {}
+        for col in df.columns:
+            type_string = _infer_column_mapping_type(df[col].dtype)
+            original_col = str(col)
+            snake_case_col = to_snake_case(original_col)
+            if snake_case_col == original_col:
+                column_mapping[snake_case_col] = ([], type_string)
+            else:
+                column_mapping[snake_case_col] = ([original_col], type_string)
+
         return {"column_mapping": column_mapping, "null_values": None, "encoding": None}
 
     else:
         raise ValueError(f"Unsupported filetype: {filetype}")
-
-    # Convert detected nulls to sorted list (or None if only empty string or nothing)
-    null_values_list = sorted(detected_nulls) if detected_nulls else None
-    # Filter out empty string from the reported list (it's handled specially by pandas)
-    if null_values_list:
-        null_values_list = [v for v in null_values_list if v != ""]
-        if not null_values_list:
-            null_values_list = None
-
-    # Build column mapping from inferred types
-    column_mapping = {}
-
-    for col in df.columns:
-        type_string = _infer_column_mapping_type(df[col].dtype)
-
-        # Convert column name to snake_case
-        original_col = str(col)
-        snake_case_col = to_snake_case(original_col)
-
-        # Format: "snake_case_name": (["OriginalName"], "type_string")
-        # Include original column name in the list of possible column names
-        # If snake_case conversion doesn't change the name, use empty list
-        if snake_case_col == original_col:
-            column_mapping[snake_case_col] = ([], type_string)
-        else:
-            column_mapping[snake_case_col] = ([original_col], type_string)
-
-    result = {"column_mapping": column_mapping, "null_values": null_values_list}
-
-    # Include encoding info
-    if detected_encoding:
-        result["encoding"] = detected_encoding
-
-    return result
 
 
 if __name__ == "__main__":
