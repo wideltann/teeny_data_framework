@@ -1953,6 +1953,49 @@ def drop_file_from_metadata_and_table(
 # CLI SCHEMA INFERENCE FUNCTIONS
 
 
+def detect_encoding(file_path: str, sample_size: int = 100000) -> Dict[str, Any]:
+    """
+    Detect file encoding using chardet
+
+    Args:
+        file_path: Path to the file
+        sample_size: Number of bytes to read for detection (default: 100KB)
+
+    Returns:
+        Dictionary with:
+        {
+            "encoding": "utf-8",      # Detected encoding (normalized)
+            "confidence": 0.99,       # Confidence score (0-1)
+            "raw_encoding": "UTF-8-SIG"  # Original chardet output
+        }
+    """
+    import chardet
+
+    with open(file_path, "rb") as f:
+        raw_data = f.read(sample_size)
+
+    result = chardet.detect(raw_data)
+
+    # Normalize encoding names for consistency
+    raw_encoding = result["encoding"] or "utf-8"
+    encoding = raw_encoding.lower().replace("-", "_").replace("_sig", "-sig")
+
+    # Map common variants to standard Python codec names
+    encoding_map = {
+        "ascii": "utf-8",  # ASCII is a subset of UTF-8
+        "windows_1252": "cp1252",
+        "iso_8859_1": "latin-1",
+        "iso_8859_15": "latin-1",
+    }
+    encoding = encoding_map.get(encoding, encoding)
+
+    return {
+        "encoding": encoding,
+        "confidence": result["confidence"] or 0.0,
+        "raw_encoding": raw_encoding,
+    }
+
+
 def to_snake_case(name: str) -> str:
     """
     Convert a string to snake_case using inflection library
@@ -1979,9 +2022,10 @@ def infer_schema_from_file(
     filetype: Optional[str] = None,
     separator: str = ",",
     has_header: bool = True,
-    encoding: str = "utf-8-sig",
+    encoding: Optional[str] = None,
     excel_skiprows: int = 0,
     sample_rows: Optional[int] = None,
+    detect_encoding_flag: bool = False,
 ) -> Dict[str, Any]:
     """
     Infer schema from file using pandas type inference
@@ -1992,14 +2036,18 @@ def infer_schema_from_file(
         separator: Delimiter for text files
         has_header: Whether the file has a header row
         encoding: File encoding (supports all Python encodings: cp1252, latin1, etc.)
+                  If None and detect_encoding_flag is True, will auto-detect.
+                  If None and detect_encoding_flag is False, defaults to utf-8-sig.
         excel_skiprows: Rows to skip in Excel files
         sample_rows: Number of rows to sample for type inference (None = read entire file)
+        detect_encoding_flag: If True, detect encoding and include in output
 
     Returns:
         Dictionary with:
         {
             "column_mapping": {"column_name": ([], "type_string"), ...},
-            "null_values": ["NA", "None", ...] or None if no custom nulls detected
+            "null_values": ["NA", "None", ...] or None if no custom nulls detected,
+            "encoding": "utf-8" (only if detect_encoding_flag is True)
         }
     """
     path = Path(file_path)
@@ -2008,6 +2056,16 @@ def infer_schema_from_file(
     if not filetype:
         ext = path.suffix.lower().lstrip(".")
         filetype = ext if ext in ["csv", "tsv", "psv", "xlsx", "parquet"] else "csv"
+
+    # Handle encoding detection/defaults
+    detected_encoding_info = None
+    if filetype in ["csv", "tsv", "psv"]:  # Only detect for text files
+        if detect_encoding_flag or encoding is None:
+            detected_encoding_info = detect_encoding(file_path)
+            if encoding is None:
+                encoding = detected_encoding_info["encoding"]
+    if encoding is None:
+        encoding = "utf-8-sig"  # Default for xlsx or if detection wasn't needed
 
     # Common null value representations to detect
     COMMON_NULL_VALUES = {"NA", "N/A", "n/a", "None", "none", "NULL", "null", "NaN", "nan", ".", "-", ""}
@@ -2063,7 +2121,8 @@ def infer_schema_from_file(
             else:
                 column_mapping[snake_case_col] = ([original_col], type_string)
 
-        return {"column_mapping": column_mapping, "null_values": None}
+        # Parquet is binary format, no encoding needed
+        return {"column_mapping": column_mapping, "null_values": None, "encoding": None}
 
     else:
         raise ValueError(f"Unsupported filetype: {filetype}")
@@ -2120,7 +2179,14 @@ def infer_schema_from_file(
         else:
             column_mapping[snake_case_col] = ([original_col], type_string)
 
-    return {"column_mapping": column_mapping, "null_values": null_values_list}
+    result = {"column_mapping": column_mapping, "null_values": null_values_list}
+
+    # Include encoding info if detected
+    if detect_encoding_flag and detected_encoding_info:
+        result["encoding"] = detected_encoding_info["encoding"]
+        result["encoding_confidence"] = detected_encoding_info["confidence"]
+
+    return result
 
 
 if __name__ == "__main__":
@@ -2166,8 +2232,14 @@ Examples:
 
     parser.add_argument(
         "--encoding",
-        default="utf-8-sig",
-        help="File encoding (default: utf-8-sig). Supports cp1252, latin1, etc.",
+        default=None,
+        help="File encoding. If not specified, auto-detects encoding. Use --no-detect-encoding to skip detection and default to utf-8-sig.",
+    )
+
+    parser.add_argument(
+        "--no-detect-encoding",
+        action="store_true",
+        help="Skip encoding detection. Uses utf-8-sig as default when --encoding is not specified.",
     )
 
     parser.add_argument(
@@ -2229,16 +2301,20 @@ Examples:
                         filetype=args.filetype,
                         separator=args.separator,
                         has_header=not args.no_header,
-                        encoding=args.encoding,
+                        encoding=args.encoding if args.encoding or args.no_detect_encoding else None,
                         excel_skiprows=args.excel_skiprows,
                         sample_rows=args.sample_rows,
+                        detect_encoding_flag=not args.no_detect_encoding,
                     )
                     file_output = {
                         "table_name": to_snake_case(file_path.stem),
                         "column_mapping": result["column_mapping"],
                     }
-                    if result["null_values"]:
+                    if result.get("null_values"):
                         file_output["null_values"] = result["null_values"]
+                    if result.get("encoding"):
+                        file_output["encoding"] = result["encoding"]
+                        file_output["encoding_confidence"] = result.get("encoding_confidence")
                     output[file_path.name] = file_output
                 except Exception as e:
                     print(f"Warning: Failed to infer schema for {file_path.name}: {e}", file=sys.stderr)
@@ -2257,17 +2333,21 @@ Examples:
                 filetype=args.filetype,
                 separator=args.separator,
                 has_header=not args.no_header,
-                encoding=args.encoding,
+                encoding=args.encoding if args.encoding or args.no_detect_encoding else None,
                 excel_skiprows=args.excel_skiprows,
                 sample_rows=args.sample_rows,
+                detect_encoding_flag=not args.no_detect_encoding,
             )
 
             file_output = {
                 "table_name": to_snake_case(input_path.stem),
                 "column_mapping": result["column_mapping"],
             }
-            if result["null_values"]:
+            if result.get("null_values"):
                 file_output["null_values"] = result["null_values"]
+            if result.get("encoding"):
+                file_output["encoding"] = result["encoding"]
+                file_output["encoding_confidence"] = result.get("encoding_confidence")
 
             output = {input_path.name: file_output}
 

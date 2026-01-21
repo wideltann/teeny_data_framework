@@ -3156,8 +3156,8 @@ class TestCLISchemaInference:
         sub_dir.mkdir()
 
         (sub_dir / "good.csv").write_text("name,age\nAlice,25\n")
-        # Create a malformed file (binary content that can't be parsed)
-        (sub_dir / "bad.csv").write_bytes(b"\x00\x01\x02\x03\xff\xfe")
+        # Create an empty file that will fail to parse
+        (sub_dir / "bad.csv").write_text("")
 
         result = subprocess.run(
             ["python", "table_functions.py", str(sub_dir), "--pretty"],
@@ -3224,6 +3224,76 @@ class TestCLISchemaInference:
         # Error messages go to stderr via loguru
         output = result.stdout + result.stderr
         assert "Error" in output or "not found" in output.lower()
+
+    def test_cli_encoding_detection_default(self, temp_dir):
+        """Test CLI detects encoding by default"""
+        import subprocess
+
+        csv_file = temp_dir / "test.csv"
+        csv_file.write_text("name,value\nAlice,100\n")
+
+        result = subprocess.run(
+            ["python", "table_functions.py", str(csv_file), "--pretty"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+
+        # Should have encoding detected by default
+        assert "test.csv" in output
+        assert "encoding" in output["test.csv"]
+        assert "encoding_confidence" in output["test.csv"]
+        assert output["test.csv"]["encoding_confidence"] > 0
+
+    def test_cli_encoding_detection_disabled(self, temp_dir):
+        """Test CLI --no-detect-encoding flag skips encoding detection"""
+        import subprocess
+
+        csv_file = temp_dir / "test.csv"
+        csv_file.write_text("name,value\nAlice,100\n")
+
+        result = subprocess.run(
+            ["python", "table_functions.py", str(csv_file), "--no-detect-encoding", "--pretty"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+
+        # Should NOT have encoding info when --no-detect-encoding is used
+        assert "test.csv" in output
+        assert "encoding" not in output["test.csv"]
+        assert "encoding_confidence" not in output["test.csv"]
+
+    def test_cli_encoding_detection_cp1252(self, temp_dir):
+        """Test CLI detects CP1252/Windows-1252 encoding"""
+        import subprocess
+
+        csv_file = temp_dir / "windows.csv"
+        # CP1252 specific characters: € (0x80), smart quotes, etc.
+        csv_file.write_bytes(b"name,city\nCaf\xe9,M\xfcnchen\n")  # é and ü in CP1252
+
+        result = subprocess.run(
+            ["python", "table_functions.py", str(csv_file), "--pretty"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+
+        # Should detect a non-UTF8 encoding
+        assert "windows.csv" in output
+        assert "encoding" in output["windows.csv"]
+        # Should be something like latin-1, cp1252, or iso-8859
+        encoding = output["windows.csv"]["encoding"]
+        assert encoding in ["cp1252", "latin-1", "iso_8859_1", "windows_1252"]
 
 
 # ===== CONNECTION AND SQL HELPER TESTS =====

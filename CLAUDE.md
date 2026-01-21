@@ -27,9 +27,10 @@ python table_functions.py data/earthquakes/ --pretty  # All files in dir
 ### CLI Options
 
 - `--filetype {csv,tsv,psv,xlsx,parquet}` - File type (auto-detected from extension)
-- `--separator ","` - Column separator for text files
+- `--separator ","` - Column separator for text files (only used with csv filetype)
 - `--no-header` - File has no header row (generates col_0, col_1, etc.)
-- `--encoding "utf-8-sig"` - File encoding
+- `--encoding "..."` - Override file encoding (auto-detected by default)
+- `--no-detect-encoding` - Skip encoding detection, use utf-8-sig as default
 - `--excel-skiprows N` - Rows to skip in Excel files
 - `--sample-rows N` - Number of rows to sample for type inference (default: read entire file)
 - `--pretty` - Pretty-print JSON output
@@ -59,7 +60,7 @@ update_table(
 
 ### Output Format
 
-The CLI outputs JSON keyed by **original filename** with `table_name` (snake_case), `column_mapping`, and optionally `null_values`:
+The CLI outputs JSON keyed by **original filename** with `table_name` (snake_case), `column_mapping`, detected `encoding`, and optionally `null_values`:
 
 ```json
 {
@@ -69,7 +70,9 @@ The CLI outputs JSON keyed by **original filename** with `table_name` (snake_cas
       "snake_case_column": [["OriginalColumnName"], "type_string"],
       "already_snake": [[], "type_string"]
     },
-    "null_values": ["NA", "None", "N/A"]
+    "null_values": ["NA", "None", "N/A"],
+    "encoding": "utf_8",
+    "encoding_confidence": 0.99
   }
 }
 ```
@@ -78,6 +81,8 @@ The CLI outputs JSON keyed by **original filename** with `table_name` (snake_cas
 - **Key**: Original filename (for matching in `column_mapping_fn`)
 - **table_name**: Snake_case version of filename stem (for `output_table_naming_fn`)
 - **column_mapping**: Column definitions with automatic snake_case conversion
+- **encoding**: Detected file encoding (e.g., `utf_8`, `cp1252`, `latin-1`). Use `--no-detect-encoding` to skip.
+- **encoding_confidence**: Confidence score (0-1) for the encoding detection
 - **null_values**: (optional) List of detected null value representations in the data. Only included if custom null values are found. Common patterns detected: `NA`, `N/A`, `None`, `NULL`, `NaN`, `.`, `-`
 
 **Column Name Conversion:**
