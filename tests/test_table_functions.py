@@ -3330,6 +3330,31 @@ class TestCLISchemaInference:
         assert "column_mapping" in output["late_special.csv"]
         assert "id" in output["late_special.csv"]["column_mapping"]
 
+    def test_cli_encoding_fallback_to_latin1(self, temp_dir):
+        """Test CLI falls back to latin-1 when detected encoding can't decode bytes"""
+        import subprocess
+
+        csv_file = temp_dir / "problematic.csv"
+        # 0x81 is undefined in most Windows codepages but valid in latin-1
+        csv_file.write_bytes(b"name,value\ntest\x81data,100\n")
+
+        result = subprocess.run(
+            ["python", "table_functions.py", str(csv_file)],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent,
+        )
+
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+
+        # Should successfully parse by falling back to latin-1
+        assert "problematic.csv" in output
+        assert "column_mapping" in output["problematic.csv"]
+        # Encoding should be latin-1 (fallback) with 0.0 confidence
+        assert output["problematic.csv"]["encoding"] == "latin-1"
+        assert output["problematic.csv"]["encoding_confidence"] == 0.0
+
 
 # ===== CONNECTION AND SQL HELPER TESTS =====
 

@@ -2081,7 +2081,15 @@ def infer_schema_from_file(
             if encoding is None:
                 encoding = detected_encoding_info["encoding"]
             # Decode bytes to string for pandas
-            file_content = raw_bytes.decode(encoding)
+            # Fall back to latin-1 if detected encoding can't decode all bytes
+            # (latin-1 can decode any byte value 0-255)
+            try:
+                file_content = raw_bytes.decode(encoding)
+            except (UnicodeDecodeError, LookupError):
+                encoding = "latin-1"
+                detected_encoding_info["encoding"] = encoding
+                detected_encoding_info["confidence"] = 0.0  # Mark as fallback
+                file_content = raw_bytes.decode(encoding)
         else:
             # Encoding provided, just read the file
             with open(file_path, "r", encoding=encoding) as f:
