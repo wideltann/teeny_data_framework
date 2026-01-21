@@ -12,16 +12,16 @@ Use the CLI to automatically infer column types from your data files. This gener
 
 ```bash
 # Infer schema from a single file
-python table_functions.py <file_path> --pretty
+python table_functions.py <file_path>
 
 # Infer schema from all files in a directory (output keyed by filename)
-python table_functions.py <directory_path> --pretty
+python table_functions.py <directory_path>
 
 # Examples
-python table_functions.py data/my_file.csv --pretty
-python table_functions.py data/my_file.psv --filetype psv --pretty
-python table_functions.py data/my_file.data --no-header --pretty
-python table_functions.py data/earthquakes/ --pretty  # All files in dir
+python table_functions.py data/my_file.csv
+python table_functions.py data/my_file.psv --filetype psv
+python table_functions.py data/my_file.data --no-header
+python table_functions.py data/earthquakes/  # All files in dir
 ```
 
 ### CLI Options
@@ -33,7 +33,6 @@ python table_functions.py data/earthquakes/ --pretty  # All files in dir
 - `--no-detect-encoding` - Skip encoding detection, use utf-8-sig as default
 - `--excel-skiprows N` - Rows to skip in Excel files
 - `--sample-rows N` - Number of rows to sample for type inference (default: read entire file)
-- `--pretty` - Pretty-print JSON output
 
 ### Workflow
 

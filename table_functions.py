@@ -2150,6 +2150,7 @@ def infer_schema_from_file(
             encoding=encoding,
             nrows=sample_rows,
             na_values=list(detected_nulls) if detected_nulls else None,
+            low_memory=False,  # Avoid mixed type warnings
         )
         if not has_header:
             df.columns = [f"col_{i}" for i in range(len(df.columns))]
@@ -2256,12 +2257,6 @@ Examples:
         help="Number of rows to sample for type inference (default: read entire file)",
     )
 
-    parser.add_argument(
-        "--pretty",
-        action="store_true",
-        help="Pretty-print JSON output",
-    )
-
     args = parser.parse_args()
 
     input_path = Path(args.path)
@@ -2320,11 +2315,8 @@ Examples:
                     print(f"Warning: Failed to infer schema for {file_path.name}: {e}", file=sys.stderr)
                     output[file_path.name] = {"error": str(e)}
 
-            # Output as JSON
-            if args.pretty:
-                print(json.dumps(output, indent=2))
-            else:
-                print(json.dumps(output))
+            # Output as JSON (pretty-printed)
+            print(json.dumps(output, indent=2))
 
         else:
             # Single file mode - keyed by filename with table_name included
@@ -2351,11 +2343,8 @@ Examples:
 
             output = {input_path.name: file_output}
 
-            # Output as JSON
-            if args.pretty:
-                print(json.dumps(output, indent=2))
-            else:
-                print(json.dumps(output))
+            # Output as JSON (pretty-printed)
+            print(json.dumps(output, indent=2))
 
     except Exception as e:
         print(f"Error inferring schema: {e}", file=sys.stderr)

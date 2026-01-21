@@ -1512,7 +1512,7 @@ Jane,Smith,25
 
         # Run CLI
         result = subprocess.run(
-            ["python", "table_functions.py", str(csv_path), "--pretty"],
+            ["python", "table_functions.py", str(csv_path)],
             capture_output=True,
             text=True,
         )
@@ -1563,7 +1563,7 @@ bar,2
 
         # Run CLI on directory
         result = subprocess.run(
-            ["python", "table_functions.py", str(data_dir), "--pretty"],
+            ["python", "table_functions.py", str(data_dir)],
             capture_output=True,
             text=True,
         )
@@ -1606,7 +1606,7 @@ Gadget,25.50
 
         # Get CLI output
         result = subprocess.run(
-            ["python", "table_functions.py", str(data_dir), "--pretty"],
+            ["python", "table_functions.py", str(data_dir)],
             capture_output=True,
             text=True,
         )
@@ -2888,7 +2888,7 @@ class TestCLISchemaInference:
 
         # Run CLI
         result = subprocess.run(
-            ["python", "table_functions.py", str(csv_path), "--pretty"],
+            ["python", "table_functions.py", str(csv_path)],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -2912,7 +2912,7 @@ class TestCLISchemaInference:
         psv_path.write_text("name|age|score\nAlice|25|85.5\n")
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(psv_path), "--pretty"],
+            ["python", "table_functions.py", str(psv_path)],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -2931,7 +2931,7 @@ class TestCLISchemaInference:
         csv_path.write_text("Alice,25,85.5\nBob,30,92.0\n")
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(csv_path), "--no-header", "--pretty"],
+            ["python", "table_functions.py", str(csv_path), "--no-header"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -2954,7 +2954,7 @@ class TestCLISchemaInference:
 
         result = subprocess.run(
             ["python", "table_functions.py", str(csv_path),
-             "--separator", ";", "--pretty"],
+             "--separator", ";"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -2979,7 +2979,7 @@ class TestCLISchemaInference:
 
         result = subprocess.run(
             ["python", "table_functions.py", str(csv_path),
-             "--sample-rows", "100", "--pretty"],
+             "--sample-rows", "100"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3020,7 +3020,7 @@ class TestCLISchemaInference:
         test_df.to_parquet(str(parquet_path))
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(parquet_path), "--pretty"],
+            ["python", "table_functions.py", str(parquet_path)],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3044,7 +3044,7 @@ class TestCLISchemaInference:
         (sub_dir / "file2.csv").write_text("id,value,score\n1,100,85.5\n2,200,92.0\n")
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(sub_dir), "--pretty"],
+            ["python", "table_functions.py", str(sub_dir)],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3086,7 +3086,7 @@ class TestCLISchemaInference:
         # Filter to only CSV files
         result = subprocess.run(
             ["python", "table_functions.py", str(sub_dir),
-             "--filetype", "csv", "--pretty"],
+             "--filetype", "csv"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3134,7 +3134,7 @@ class TestCLISchemaInference:
         (child_dir / "child_file.csv").write_text("x,y\n3,4\n")
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(parent_dir), "--pretty"],
+            ["python", "table_functions.py", str(parent_dir)],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3160,7 +3160,7 @@ class TestCLISchemaInference:
         (sub_dir / "bad.csv").write_text("")
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(sub_dir), "--pretty"],
+            ["python", "table_functions.py", str(sub_dir)],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3194,7 +3194,7 @@ class TestCLISchemaInference:
         test_df.to_parquet(str(sub_dir / "data.parquet"))
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(sub_dir), "--pretty"],
+            ["python", "table_functions.py", str(sub_dir)],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3233,7 +3233,7 @@ class TestCLISchemaInference:
         csv_file.write_text("name,value\nAlice,100\n")
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(csv_file), "--pretty"],
+            ["python", "table_functions.py", str(csv_file)],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3256,7 +3256,7 @@ class TestCLISchemaInference:
         csv_file.write_text("name,value\nAlice,100\n")
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(csv_file), "--no-detect-encoding", "--pretty"],
+            ["python", "table_functions.py", str(csv_file), "--no-detect-encoding"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3279,7 +3279,7 @@ class TestCLISchemaInference:
         csv_file.write_bytes(b"name,city\nCaf\xe9,M\xfcnchen\n")  # é and ü in CP1252
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(csv_file), "--pretty"],
+            ["python", "table_functions.py", str(csv_file)],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
