@@ -275,12 +275,14 @@ add_files_to_metadata_table(..., filesystem=fs)
 
 ### Schema Inference CLI
 
-Infer column types from your data files:
+Infer column types and detect null values from your data files:
 
 ```bash
 python table_functions.py data/my_file.csv --pretty
 python table_functions.py data/my_files/ --pretty  # All files in directory
 ```
+
+The CLI reads the entire file by default (use `--sample-rows N` to limit) and automatically detects common null value representations (`NA`, `N/A`, `None`, `NULL`, etc.) in your data.
 
 ### Custom Transformations
 

@@ -1292,11 +1292,12 @@ class TestSchemaInference:
 
     def test_infer_schema_from_csv(self, sample_csv_file):
         """Test schema inference from CSV file"""
-        column_mapping = infer_schema_from_file(
+        result = infer_schema_from_file(
             str(sample_csv_file),
             filetype="csv",
             has_header=True,
         )
+        column_mapping = result["column_mapping"]
 
         assert "name" in column_mapping
         assert "age" in column_mapping
@@ -1309,11 +1310,12 @@ class TestSchemaInference:
 
     def test_infer_schema_from_csv_no_header(self, sample_csv_no_header):
         """Test schema inference from headerless CSV"""
-        column_mapping = infer_schema_from_file(
+        result = infer_schema_from_file(
             str(sample_csv_no_header),
             filetype="csv",
             has_header=False,
         )
+        column_mapping = result["column_mapping"]
 
         # Should generate col_0, col_1, col_2
         assert "col_0" in column_mapping
@@ -1322,11 +1324,12 @@ class TestSchemaInference:
 
     def test_infer_schema_from_psv(self, sample_psv_file):
         """Test schema inference from pipe-delimited file"""
-        column_mapping = infer_schema_from_file(
+        result = infer_schema_from_file(
             str(sample_psv_file),
             filetype="psv",
             has_header=True,
         )
+        column_mapping = result["column_mapping"]
 
         assert "name" in column_mapping
         assert "age" in column_mapping
@@ -1334,10 +1337,11 @@ class TestSchemaInference:
 
     def test_infer_schema_auto_detect_filetype(self, sample_csv_file):
         """Test auto-detection of file type from extension"""
-        column_mapping = infer_schema_from_file(
+        result = infer_schema_from_file(
             str(sample_csv_file),
             has_header=True,
         )
+        column_mapping = result["column_mapping"]
 
         assert "name" in column_mapping
         assert len(column_mapping) == 3
@@ -1352,11 +1356,12 @@ Jane,Smith,67890,150.75,2024-01-02
         csv_path = temp_dir / "test_snake_case.csv"
         csv_path.write_text(csv_content)
 
-        column_mapping = infer_schema_from_file(
+        result = infer_schema_from_file(
             str(csv_path),
             filetype="csv",
             has_header=True,
         )
+        column_mapping = result["column_mapping"]
 
         # Check that column names are snake_case
         assert "first_name" in column_mapping
@@ -1394,11 +1399,12 @@ Jane,Smith,67890,150.75
         csv_path = temp_dir / "test_already_snake.csv"
         csv_path.write_text(csv_content)
 
-        column_mapping = infer_schema_from_file(
+        result = infer_schema_from_file(
             str(csv_path),
             filetype="csv",
             has_header=True,
         )
+        column_mapping = result["column_mapping"]
 
         # Check that column names remain snake_case
         assert "first_name" in column_mapping
@@ -1421,11 +1427,12 @@ value1,value2,value3,value4,value5
         csv_path = temp_dir / "test_mixed_case.csv"
         csv_path.write_text(csv_content)
 
-        column_mapping = infer_schema_from_file(
+        result = infer_schema_from_file(
             str(csv_path),
             filetype="csv",
             has_header=True,
         )
+        column_mapping = result["column_mapping"]
 
         # Check conversions
         assert "camel_case" in column_mapping
@@ -1442,6 +1449,49 @@ value1,value2,value3,value4,value5
 
         assert "spaced_name" in column_mapping
         assert column_mapping["spaced_name"][0] == ["Spaced Name"]
+
+    def test_infer_schema_detects_null_values(self, temp_dir):
+        """Test schema inference detects common null value representations"""
+        csv_content = """name,age,score,status
+Alice,25,95.5,active
+Bob,NA,80.0,inactive
+Charlie,30,None,active
+Dave,N/A,70.0,NULL
+"""
+        csv_path = temp_dir / "test_nulls.csv"
+        csv_path.write_text(csv_content)
+
+        result = infer_schema_from_file(
+            str(csv_path),
+            filetype="csv",
+            has_header=True,
+        )
+
+        # Should detect NA, None, N/A, NULL as null values
+        assert result["null_values"] is not None
+        assert "NA" in result["null_values"]
+        assert "None" in result["null_values"]
+        assert "N/A" in result["null_values"]
+        assert "NULL" in result["null_values"]
+
+    def test_infer_schema_no_null_values(self, temp_dir):
+        """Test schema inference returns None when no custom null values present"""
+        csv_content = """name,age,score
+Alice,25,95.5
+Bob,30,80.0
+Charlie,35,70.0
+"""
+        csv_path = temp_dir / "test_no_nulls.csv"
+        csv_path.write_text(csv_content)
+
+        result = infer_schema_from_file(
+            str(csv_path),
+            filetype="csv",
+            has_header=True,
+        )
+
+        # No custom null values should be detected
+        assert result["null_values"] is None
 
 
 class TestCLIOutputFormat:
@@ -3615,9 +3665,10 @@ class TestTypeInferenceEdgeCases:
         csv_path.write_text("value\n100\ntext\n200\n")
 
         result = infer_schema_from_file(str(csv_path))
+        column_mapping = result["column_mapping"]
 
         # Should infer as string since mixed types
-        assert result["value"][1] == "string"
+        assert column_mapping["value"][1] == "string"
 
     def test_infer_schema_empty_column(self, temp_dir):
         """Test schema inference with column that has all empty values"""
@@ -3625,10 +3676,11 @@ class TestTypeInferenceEdgeCases:
         csv_path.write_text("name,empty_col,value\nAlice,,100\nBob,,200\n")
 
         result = infer_schema_from_file(str(csv_path))
+        column_mapping = result["column_mapping"]
 
         # Empty column gets inferred as float by pandas (NaN values are float)
-        assert "empty_col" in result
-        assert result["empty_col"][1] == "float"
+        assert "empty_col" in column_mapping
+        assert column_mapping["empty_col"][1] == "float"
 
     def test_infer_schema_boolean_column(self, temp_dir):
         """Test schema inference with boolean values"""
@@ -3636,8 +3688,9 @@ class TestTypeInferenceEdgeCases:
         csv_path.write_text("name,active\nAlice,true\nBob,false\n")
 
         result = infer_schema_from_file(str(csv_path))
+        column_mapping = result["column_mapping"]
 
-        assert result["active"][1] == "boolean"
+        assert column_mapping["active"][1] == "boolean"
 
     def test_infer_schema_date_column(self, temp_dir):
         """Test schema inference with date values"""
@@ -3645,9 +3698,10 @@ class TestTypeInferenceEdgeCases:
         csv_path.write_text("name,created_at\nAlice,2024-01-15\nBob,2024-02-20\n")
 
         result = infer_schema_from_file(str(csv_path))
+        column_mapping = result["column_mapping"]
 
         # Dates might be inferred as datetime or string depending on Polars
-        assert "created_at" in result
+        assert "created_at" in column_mapping
 
 
 # ===== CSV HEADER AND ROW COUNT EDGE CASES =====

@@ -1981,8 +1981,8 @@ def infer_schema_from_file(
     has_header: bool = True,
     encoding: str = "utf-8-sig",
     excel_skiprows: int = 0,
-    sample_rows: int = 1000,
-) -> Dict[str, Tuple[List[str], str]]:
+    sample_rows: Optional[int] = None,
+) -> Dict[str, Any]:
     """
     Infer schema from file using pandas type inference
 
@@ -1993,13 +1993,13 @@ def infer_schema_from_file(
         has_header: Whether the file has a header row
         encoding: File encoding (supports all Python encodings: cp1252, latin1, etc.)
         excel_skiprows: Rows to skip in Excel files
-        sample_rows: Number of rows to sample for type inference
+        sample_rows: Number of rows to sample for type inference (None = read entire file)
 
     Returns:
-        Column mapping dictionary in the format:
+        Dictionary with:
         {
-            "column_name": ([], "type_string"),
-            ...
+            "column_mapping": {"column_name": ([], "type_string"), ...},
+            "null_values": ["NA", "None", ...] or None if no custom nulls detected
         }
     """
     path = Path(file_path)
@@ -2009,8 +2009,11 @@ def infer_schema_from_file(
         ext = path.suffix.lower().lstrip(".")
         filetype = ext if ext in ["csv", "tsv", "psv", "xlsx", "parquet"] else "csv"
 
-    # Read file with pandas type inference
-    df = None
+    # Common null value representations to detect
+    COMMON_NULL_VALUES = {"NA", "N/A", "n/a", "None", "none", "NULL", "null", "NaN", "nan", ".", "-", ""}
+
+    # Read file with pandas type inference (keep_default_na=False to see raw values)
+    df_raw = None
 
     if filetype in ["csv", "tsv", "psv"]:
         # Determine separator
@@ -2019,34 +2022,85 @@ def infer_schema_from_file(
         elif filetype == "psv":
             separator = "|"
 
-        # Read with pandas - full encoding support
+        # First read with keep_default_na=False to detect null patterns
+        df_raw = pd.read_csv(
+            file_path,
+            sep=separator,
+            header=0 if has_header else None,
+            encoding=encoding,
+            nrows=sample_rows,
+            keep_default_na=False,
+            dtype=str,  # Read everything as string to detect null patterns
+        )
+
+        # If no header, generate column names
+        if not has_header:
+            df_raw.columns = [f"col_{i}" for i in range(len(df_raw.columns))]
+
+    elif filetype == "xlsx":
+        df_raw = pd.read_excel(
+            file_path,
+            skiprows=excel_skiprows,
+            nrows=sample_rows,
+            keep_default_na=False,
+            dtype=str,
+        )
+
+    elif filetype == "parquet":
+        # Parquet already has type information and proper nulls
+        df = pd.read_parquet(file_path)
+        if sample_rows:
+            df = df.head(sample_rows)
+
+        # Build column mapping from inferred types
+        column_mapping = {}
+        for col in df.columns:
+            type_string = _infer_column_mapping_type(df[col].dtype)
+            original_col = str(col)
+            snake_case_col = to_snake_case(original_col)
+            if snake_case_col == original_col:
+                column_mapping[snake_case_col] = ([], type_string)
+            else:
+                column_mapping[snake_case_col] = ([original_col], type_string)
+
+        return {"column_mapping": column_mapping, "null_values": None}
+
+    else:
+        raise ValueError(f"Unsupported filetype: {filetype}")
+
+    # Detect null values present in the data
+    detected_nulls = set()
+    for col in df_raw.columns:
+        unique_values = set(df_raw[col].unique())
+        detected_nulls.update(unique_values & COMMON_NULL_VALUES)
+
+    # Convert detected nulls to sorted list (or None if only empty string or nothing)
+    null_values_list = sorted(detected_nulls) if detected_nulls else None
+    # Filter out empty string from the reported list (it's handled specially by pandas)
+    if null_values_list:
+        null_values_list = [v for v in null_values_list if v != ""]
+        if not null_values_list:
+            null_values_list = None
+
+    # Now re-read with proper null handling for type inference
+    if filetype in ["csv", "tsv", "psv"]:
         df = pd.read_csv(
             file_path,
             sep=separator,
             header=0 if has_header else None,
             encoding=encoding,
             nrows=sample_rows,
+            na_values=list(detected_nulls) if detected_nulls else None,
         )
-
-        # If no header, generate column names
         if not has_header:
             df.columns = [f"col_{i}" for i in range(len(df.columns))]
-
-    elif filetype == "xlsx":
+    else:  # xlsx
         df = pd.read_excel(
             file_path,
             skiprows=excel_skiprows,
             nrows=sample_rows,
+            na_values=list(detected_nulls) if detected_nulls else None,
         )
-
-    elif filetype == "parquet":
-        # Parquet already has type information
-        df = pd.read_parquet(file_path)
-        # Sample rows
-        df = df.head(sample_rows)
-
-    else:
-        raise ValueError(f"Unsupported filetype: {filetype}")
 
     # Build column mapping from inferred types
     column_mapping = {}
@@ -2066,7 +2120,7 @@ def infer_schema_from_file(
         else:
             column_mapping[snake_case_col] = ([original_col], type_string)
 
-    return column_mapping
+    return {"column_mapping": column_mapping, "null_values": null_values_list}
 
 
 if __name__ == "__main__":
@@ -2126,8 +2180,8 @@ Examples:
     parser.add_argument(
         "--sample-rows",
         type=int,
-        default=1000,
-        help="Number of rows to sample for type inference (default: 1000)",
+        default=None,
+        help="Number of rows to sample for type inference (default: read entire file)",
     )
 
     parser.add_argument(
@@ -2170,7 +2224,7 @@ Examples:
             output = {}
             for file_path in files:
                 try:
-                    column_mapping = infer_schema_from_file(
+                    result = infer_schema_from_file(
                         file_path=str(file_path),
                         filetype=args.filetype,
                         separator=args.separator,
@@ -2179,10 +2233,13 @@ Examples:
                         excel_skiprows=args.excel_skiprows,
                         sample_rows=args.sample_rows,
                     )
-                    output[file_path.name] = {
+                    file_output = {
                         "table_name": to_snake_case(file_path.stem),
-                        "column_mapping": column_mapping,
+                        "column_mapping": result["column_mapping"],
                     }
+                    if result["null_values"]:
+                        file_output["null_values"] = result["null_values"]
+                    output[file_path.name] = file_output
                 except Exception as e:
                     print(f"Warning: Failed to infer schema for {file_path.name}: {e}", file=sys.stderr)
                     output[file_path.name] = {"error": str(e)}
@@ -2195,7 +2252,7 @@ Examples:
 
         else:
             # Single file mode - keyed by filename with table_name included
-            column_mapping = infer_schema_from_file(
+            result = infer_schema_from_file(
                 file_path=str(input_path),
                 filetype=args.filetype,
                 separator=args.separator,
@@ -2205,12 +2262,14 @@ Examples:
                 sample_rows=args.sample_rows,
             )
 
-            output = {
-                input_path.name: {
-                    "table_name": to_snake_case(input_path.stem),
-                    "column_mapping": column_mapping,
-                }
+            file_output = {
+                "table_name": to_snake_case(input_path.stem),
+                "column_mapping": result["column_mapping"],
             }
+            if result["null_values"]:
+                file_output["null_values"] = result["null_values"]
+
+            output = {input_path.name: file_output}
 
             # Output as JSON
             if args.pretty:
