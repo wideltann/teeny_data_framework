@@ -425,21 +425,32 @@ def read_csv(
     has_header: bool = False,
     null_values: Optional[List[str]] = None,
     separator: str = ",",
-    encoding: str = "utf-8-sig",
 ) -> pd.DataFrame:
     """
     Read CSV file and return pandas DataFrame with proper schema and column mapping.
 
-    Supports any encoding that Python's codecs module supports (cp1252, latin1, etc.)
+    Encoding is auto-detected: tries UTF-8 first, falls back to latin-1+ftfy.
     """
-    if not header:
-        # some files start with a BOM (byte-order-mark)
-        # if we dont use sig then that BOM will get included in the header
-        import csv
+    from io import StringIO
+    import ftfy
 
-        with open(full_path, "r", encoding=encoding, newline="") as f:
-            reader = csv.reader(f, delimiter=separator)
-            header = next(reader)
+    # Read file with auto-encoding detection
+    with open(full_path, "rb") as f:
+        raw_bytes = f.read()
+
+    try:
+        file_content = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        file_content = ftfy.fix_text(raw_bytes.decode("latin-1"))
+
+    # Remove BOM if present
+    if file_content.startswith("\ufeff"):
+        file_content = file_content[1:]
+
+    if not header:
+        import csv
+        reader = csv.reader(StringIO(file_content), delimiter=separator)
+        header = next(reader)
 
     # Process column mapping to get rename dict, dtypes, and missing columns
     rename_dict, read_dtypes, missing_cols = prepare_column_mapping(
@@ -453,25 +464,23 @@ def read_csv(
 
     try:
         df = pd.read_csv(
-            full_path,
+            StringIO(file_content),
             sep=separator,
             header=0 if has_header else None,
             names=header if not has_header else None,
             dtype=read_dtypes,
             na_values=null_values,
             keep_default_na=keep_default_na,
-            encoding=encoding,
         )
     except (ValueError, TypeError) as e:
         # Try to identify which column caused the error by reading without dtypes
         df_raw = pd.read_csv(
-            full_path,
+            StringIO(file_content),
             sep=separator,
             header=0 if has_header else None,
             names=header if not has_header else None,
             na_values=null_values,
             keep_default_na=keep_default_na,
-            encoding=encoding,
         )
         for col, dtype in read_dtypes.items():
             if col in df_raw.columns:
@@ -492,7 +501,6 @@ def read_csv(
 def read_fixed_width(
     full_path: Optional[str] = None,
     column_mapping: Optional[Dict[str, Tuple[str, int, int]]] = None,
-    encoding: str = "utf-8",
 ) -> pd.DataFrame:
     """
     Read fixed-width file and return pandas DataFrame using pd.read_fwf
@@ -505,7 +513,20 @@ def read_fixed_width(
     {'column_name': (type, starting_position, field_size)}
 
     Note: starting_position is 1-indexed (first character is position 1)
+    Encoding is auto-detected: tries UTF-8 first, falls back to latin-1+ftfy.
     """
+    from io import StringIO
+    import ftfy
+
+    # Read file with auto-encoding detection
+    with open(full_path, "rb") as f:
+        raw_bytes = f.read()
+
+    try:
+        file_content = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        file_content = ftfy.fix_text(raw_bytes.decode("latin-1"))
+
     # Build colspecs for pandas read_fwf
     # colspecs is a list of (start, end) tuples, 0-indexed
     colspecs = []
@@ -521,11 +542,10 @@ def read_fixed_width(
         dtypes[col_name] = _dtype_str_to_pandas(col_type)
 
     df = pd.read_fwf(
-        full_path,
+        StringIO(file_content),
         colspecs=colspecs,
         names=names,
         dtype=dtypes,
-        encoding=encoding,
     )
 
     return df
@@ -539,10 +559,10 @@ def read_using_column_mapping(
     has_header: bool = False,
     null_values: Optional[List[str]] = None,
     excel_skiprows: int = 0,
-    encoding: str = "utf-8-sig",
 ) -> Optional[pd.DataFrame]:
     """
-    Router function to read different file types with column mapping
+    Router function to read different file types with column mapping.
+    Encoding is auto-detected for text files: tries UTF-8 first, falls back to latin-1+ftfy.
     """
     match filetype:
         case "csv":
@@ -553,7 +573,6 @@ def read_using_column_mapping(
                 header=header,
                 separator=",",
                 null_values=null_values,
-                encoding=encoding,
             )
         case "tsv":
             return read_csv(
@@ -563,7 +582,6 @@ def read_using_column_mapping(
                 header=header,
                 separator="\t",
                 null_values=null_values,
-                encoding=encoding,
             )
         case "psv":
             return read_csv(
@@ -573,7 +591,6 @@ def read_using_column_mapping(
                 header=header,
                 separator="|",
                 null_values=null_values,
-                encoding=encoding,
             )
         case "xlsx":
             return read_xlsx(
@@ -587,7 +604,6 @@ def read_using_column_mapping(
             return read_fixed_width(
                 full_path=full_path,
                 column_mapping=column_mapping,
-                encoding=encoding,
             )
         case _:
             raise ValueError(
@@ -894,7 +910,6 @@ def update_table(
     header_fn: Optional[Callable[[Path], List[str]]] = None,
     null_values: Optional[List[str]] = None,
     excel_skiprows: int = 0,
-    encoding: str = "utf-8-sig",
     cleanup: bool = False,
     ephemeral_cache: bool = False,
 ) -> pd.DataFrame:
@@ -908,6 +923,8 @@ def update_table(
         ephemeral_cache: If True, use a temporary directory that is deleted after processing.
                         If False (default), use persistent temp/ directory.
         ... (other args unchanged)
+
+    Note: Encoding is auto-detected for text files (tries UTF-8 first, falls back to latin-1+ftfy).
     """
     import tempfile
 
@@ -940,7 +957,6 @@ def update_table(
             header_fn=header_fn,
             null_values=null_values,
             excel_skiprows=excel_skiprows,
-            encoding=encoding,
             cleanup=cleanup,
         )
     finally:
@@ -973,7 +989,6 @@ def _update_table_impl(
     header_fn: Optional[Callable[[Path], List[str]]] = None,
     null_values: Optional[List[str]] = None,
     excel_skiprows: int = 0,
-    encoding: str = "utf-8-sig",
     cleanup: bool = False,
 ) -> pd.DataFrame:
     """Internal implementation of update_table"""
@@ -1078,7 +1093,6 @@ def _update_table_impl(
                     has_header=has_header,
                     null_values=null_values,
                     excel_skiprows=excel_skiprows,
-                    encoding=encoding,
                 )
 
             if pivot_mapping:
@@ -1196,7 +1210,6 @@ def _update_table_impl(
 
 
 def get_csv_header_and_row_count(
-    encoding: str = "utf-8-sig",
     file: Optional[str] = None,
     separator: str = ",",
     has_header: bool = True,
@@ -1205,17 +1218,30 @@ def get_csv_header_and_row_count(
     Get header and row count from CSV file.
     Counts only non-blank lines to match pandas' skip_blank_lines=True behavior.
     File path should be a string.
+    Encoding is auto-detected: tries UTF-8 first, falls back to latin-1+ftfy.
     """
     import subprocess
     import csv
+    import ftfy
 
     file_str = str(file)
 
-    # always return the first row even if it isnt a header
-    # must ignore BOM mark
-    with open(file_str, "r", encoding=encoding, newline="") as f:
-        reader = csv.reader(f, delimiter=separator)
-        header = next(reader)
+    # Read first line with auto-encoding detection
+    # Try UTF-8 first, fall back to latin-1+ftfy
+    with open(file_str, "rb") as f:
+        first_line_bytes = f.readline()
+
+    try:
+        first_line = first_line_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        first_line = ftfy.fix_text(first_line_bytes.decode("latin-1"))
+
+    # Remove BOM if present
+    if first_line.startswith("\ufeff"):
+        first_line = first_line[1:]
+
+    reader = csv.reader([first_line], delimiter=separator)
+    header = next(reader)
 
     # Count non-blank lines to match pandas behavior (skip_blank_lines=True)
     # Using grep -c to count non-empty lines
@@ -1240,7 +1266,6 @@ def extract_and_add_zip_files(
     filetype: Optional[str] = None,
     resume: Optional[bool] = None,
     sample: Optional[int] = None,
-    encoding: Optional[str] = None,
     archive_glob: Optional[str] = None,
     filesystem: Optional[Any] = None,
     **kwargs,  # Accept but ignore extra kwargs for compatibility
@@ -1252,6 +1277,7 @@ def extract_and_add_zip_files(
     e.g., "s3://bucket/data.zip::folder/file.csv"
 
     Files are extracted to temp/ cache, mirroring the source structure.
+    Encoding is auto-detected (tries UTF-8 first, falls back to latin-1+ftfy).
 
     Returns:
         Tuple of (rows, archive_stats) where:
@@ -1345,7 +1371,6 @@ def extract_and_add_zip_files(
                         source_dir=source_dir,
                         filetype=filetype,
                         has_header=has_header,
-                        encoding=encoding,
                     )
                     archive_file_count += 1
 
@@ -1358,7 +1383,6 @@ def extract_and_add_zip_files(
                         filetype=filetype,
                         has_header=has_header,
                         error_message=str(e),
-                        encoding=encoding,
                     )
 
                     # Cleanup failed files
@@ -1387,7 +1411,6 @@ def add_files(
     filetype: Optional[str] = None,
     has_header: bool = True,
     source_path_list: Optional[List[str]] = None,
-    encoding: Optional[str] = None,
     filesystem: Optional[Any] = None,
     **kwargs,  # Accept but ignore extra kwargs for compatibility
 ) -> List[Dict[str, Any]]:
@@ -1398,6 +1421,7 @@ def add_files(
     For local files: reads directly from source (no copy needed)
 
     source_path is the file's identity (primary key in metadata).
+    Encoding is auto-detected (tries UTF-8 first, falls back to latin-1+ftfy).
     """
     # Normalize source_dir
     source_dir = normalize_path(source_dir) if source_dir else None
@@ -1443,7 +1467,6 @@ def add_files(
                 source_dir=source_dir,
                 filetype=filetype,
                 has_header=has_header,
-                encoding=encoding,
             )
 
             print(f"{num_processed}/{total_files_to_be_processed}")
@@ -1457,7 +1480,6 @@ def add_files(
                 filetype=filetype,
                 has_header=has_header,
                 error_message=str(e),
-                encoding=encoding,
             )
 
         rows.append(row)
@@ -1471,7 +1493,6 @@ def get_file_metadata_row(
     filetype: Optional[str] = None,
     has_header: Optional[bool] = None,
     error_message: Optional[str] = None,
-    encoding: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Generate metadata row for a file.
@@ -1482,7 +1503,8 @@ def get_file_metadata_row(
         filetype: File type (csv, tsv, psv, etc.)
         has_header: Whether file has header row
         error_message: Error message if extraction failed
-        encoding: File encoding
+
+    Note: Encoding is auto-detected (tries UTF-8 first, falls back to latin-1+ftfy).
     """
     import hashlib
     import time
@@ -1516,25 +1538,23 @@ def get_file_metadata_row(
         match filetype:
             case "csv":
                 header, row_count = get_csv_header_and_row_count(
-                    file=str(cache_path), has_header=has_header, encoding=encoding
+                    file=str(cache_path), has_header=has_header
                 )
             case "tsv":
                 header, row_count = get_csv_header_and_row_count(
                     file=str(cache_path),
                     has_header=has_header,
                     separator="\t",
-                    encoding=encoding,
                 )
             case "psv":
                 header, row_count = get_csv_header_and_row_count(
                     file=str(cache_path),
                     has_header=has_header,
                     separator="|",
-                    encoding=encoding,
                 )
             case "fixed_width":
                 header, row_count = get_csv_header_and_row_count(
-                    file=str(cache_path), has_header=False, encoding=encoding
+                    file=str(cache_path), has_header=False
                 )
             case "xlsx":
                 df = pd.read_excel(cache_path)
@@ -1574,7 +1594,6 @@ _ADD_FILES_VALID_PARAMS = {
     "compression_type",
     "archive_glob",
     "has_header",
-    "encoding",
     "resume",
     "retry_failed",
     "sample",
@@ -1953,53 +1972,50 @@ def drop_file_from_metadata_and_table(
 # CLI SCHEMA INFERENCE FUNCTIONS
 
 
-def detect_encoding(file_path: str, return_bytes: bool = False) -> Dict[str, Any]:
+def decode_file_content(file_path: str) -> Dict[str, Any]:
     """
-    Detect file encoding using chardet
+    Decode file content with automatic encoding handling.
+
+    Strategy:
+    1. Try UTF-8 first (most common modern encoding)
+    2. If UTF-8 fails, decode as latin-1 (accepts any byte) and use ftfy to fix mojibake
 
     Args:
         file_path: Path to the file
-        return_bytes: If True, include raw bytes in return dict for reuse
 
     Returns:
         Dictionary with:
         {
-            "encoding": "utf-8",      # Detected encoding (normalized)
-            "confidence": 0.99,       # Confidence score (0-1)
-            "raw_encoding": "UTF-8-SIG",  # Original chardet output
-            "raw_bytes": b"..."       # Only if return_bytes=True
+            "content": "decoded string content",
+            "encoding": "utf-8" or "latin-1+ftfy",
+            "raw_bytes": b"..."  # Original bytes for reuse
         }
     """
-    import chardet
+    import ftfy
 
     with open(file_path, "rb") as f:
-        raw_data = f.read()  # Read entire file for accurate detection
+        raw_bytes = f.read()
 
-    result = chardet.detect(raw_data)
+    # Try UTF-8 first
+    try:
+        content = raw_bytes.decode("utf-8")
+        return {
+            "content": content,
+            "encoding": "utf-8",
+            "raw_bytes": raw_bytes,
+        }
+    except UnicodeDecodeError:
+        pass
 
-    # Normalize encoding names for consistency
-    raw_encoding = result["encoding"] or "utf-8"
-    encoding = raw_encoding.lower().replace("-", "_").replace("_sig", "-sig")
-
-    # Map common variants to standard Python codec names
-    encoding_map = {
-        "ascii": "utf-8",  # ASCII is a subset of UTF-8
-        "windows_1252": "cp1252",
-        "iso_8859_1": "latin-1",
-        "iso_8859_15": "latin-1",
+    # Fall back to latin-1 + ftfy
+    # latin-1 can decode any byte (0x00-0xFF map to U+0000-U+00FF)
+    # ftfy then fixes mojibake patterns (e.g., UTF-8 decoded as latin-1)
+    content = ftfy.fix_text(raw_bytes.decode("latin-1"))
+    return {
+        "content": content,
+        "encoding": "latin-1+ftfy",
+        "raw_bytes": raw_bytes,
     }
-    encoding = encoding_map.get(encoding, encoding)
-
-    output = {
-        "encoding": encoding,
-        "confidence": result["confidence"] or 0.0,
-        "raw_encoding": raw_encoding,
-    }
-
-    if return_bytes:
-        output["raw_bytes"] = raw_data
-
-    return output
 
 
 def to_snake_case(name: str) -> str:
@@ -2031,7 +2047,6 @@ def infer_schema_from_file(
     encoding: Optional[str] = None,
     excel_skiprows: int = 0,
     sample_rows: Optional[int] = None,
-    detect_encoding_flag: bool = False,
 ) -> Dict[str, Any]:
     """
     Infer schema from file using pandas type inference
@@ -2041,19 +2056,16 @@ def infer_schema_from_file(
         filetype: File type (csv, tsv, psv, xlsx, parquet)
         separator: Delimiter for text files
         has_header: Whether the file has a header row
-        encoding: File encoding (supports all Python encodings: cp1252, latin1, etc.)
-                  If None and detect_encoding_flag is True, will auto-detect.
-                  If None and detect_encoding_flag is False, defaults to utf-8-sig.
+        encoding: File encoding. If None, auto-detects (tries UTF-8, falls back to latin-1+ftfy)
         excel_skiprows: Rows to skip in Excel files
         sample_rows: Number of rows to sample for type inference (None = read entire file)
-        detect_encoding_flag: If True, detect encoding and include in output
 
     Returns:
         Dictionary with:
         {
             "column_mapping": {"column_name": ([], "type_string"), ...},
             "null_values": ["NA", "None", ...] or None if no custom nulls detected,
-            "encoding": "utf-8" (only if detect_encoding_flag is True)
+            "encoding": "utf-8" or "latin-1+ftfy"
         }
     """
     from io import StringIO
@@ -2068,32 +2080,22 @@ def infer_schema_from_file(
     # Common null value representations to detect
     COMMON_NULL_VALUES = {"NA", "N/A", "n/a", "None", "none", "NULL", "null", "NaN", "nan", ".", "-", ""}
 
-    # Handle encoding detection and file reading
-    detected_encoding_info = None
+    # Handle encoding and file reading
+    detected_encoding = None
     file_content = None  # For reusing file content
 
     if filetype in ["csv", "tsv", "psv"]:
-        # For text files: detect encoding and read file once
-        if detect_encoding_flag or encoding is None:
-            # Read file once, get both encoding and bytes
-            detected_encoding_info = detect_encoding(file_path, return_bytes=True)
-            raw_bytes = detected_encoding_info.pop("raw_bytes")  # Remove from info dict
-            if encoding is None:
-                encoding = detected_encoding_info["encoding"]
-            # Decode bytes to string for pandas
-            # Fall back to latin-1 if detected encoding can't decode all bytes
-            # (latin-1 can decode any byte value 0-255)
-            try:
-                file_content = raw_bytes.decode(encoding)
-            except (UnicodeDecodeError, LookupError):
-                encoding = "latin-1"
-                detected_encoding_info["encoding"] = encoding
-                detected_encoding_info["confidence"] = 0.0  # Mark as fallback
-                file_content = raw_bytes.decode(encoding)
+        # For text files: handle encoding
+        if encoding is None:
+            # Auto-detect: try UTF-8 first, fall back to latin-1+ftfy
+            decoded = decode_file_content(file_path)
+            file_content = decoded["content"]
+            detected_encoding = decoded["encoding"]
         else:
             # Encoding provided, just read the file
             with open(file_path, "r", encoding=encoding) as f:
                 file_content = f.read()
+            detected_encoding = encoding
 
         # Determine separator
         if filetype == "tsv":
@@ -2244,10 +2246,9 @@ def infer_schema_from_file(
 
     result = {"column_mapping": column_mapping, "null_values": null_values_list}
 
-    # Include encoding info if detected
-    if detect_encoding_flag and detected_encoding_info:
-        result["encoding"] = detected_encoding_info["encoding"]
-        result["encoding_confidence"] = detected_encoding_info["confidence"]
+    # Include encoding info
+    if detected_encoding:
+        result["encoding"] = detected_encoding
 
     return result
 
@@ -2291,18 +2292,6 @@ Examples:
         "--no-header",
         action="store_true",
         help="File has no header row",
-    )
-
-    parser.add_argument(
-        "--encoding",
-        default=None,
-        help="File encoding. If not specified, auto-detects encoding. Use --no-detect-encoding to skip detection and default to utf-8-sig.",
-    )
-
-    parser.add_argument(
-        "--no-detect-encoding",
-        action="store_true",
-        help="Skip encoding detection. Uses utf-8-sig as default when --encoding is not specified.",
     )
 
     parser.add_argument(
@@ -2360,10 +2349,8 @@ Examples:
                         filetype=args.filetype,
                         separator=args.separator,
                         has_header=not args.no_header,
-                        encoding=args.encoding if args.encoding or args.no_detect_encoding else None,
                         excel_skiprows=args.excel_skiprows,
                         sample_rows=args.sample_rows,
-                        detect_encoding_flag=not args.no_detect_encoding,
                     )
                     file_output = {
                         "table_name": to_snake_case(file_path.stem),
@@ -2373,7 +2360,6 @@ Examples:
                         file_output["null_values"] = result["null_values"]
                     if result.get("encoding"):
                         file_output["encoding"] = result["encoding"]
-                        file_output["encoding_confidence"] = result.get("encoding_confidence")
                     output[file_path.name] = file_output
                 except Exception as e:
                     print(f"{i + 1}/{total_files} Failed: {file_path.name} - {e}", file=sys.stderr)
@@ -2390,10 +2376,8 @@ Examples:
                 filetype=args.filetype,
                 separator=args.separator,
                 has_header=not args.no_header,
-                encoding=args.encoding if args.encoding or args.no_detect_encoding else None,
                 excel_skiprows=args.excel_skiprows,
                 sample_rows=args.sample_rows,
-                detect_encoding_flag=not args.no_detect_encoding,
             )
 
             file_output = {
@@ -2404,7 +2388,6 @@ Examples:
                 file_output["null_values"] = result["null_values"]
             if result.get("encoding"):
                 file_output["encoding"] = result["encoding"]
-                file_output["encoding_confidence"] = result.get("encoding_confidence")
 
             output = {input_path.name: file_output}
 

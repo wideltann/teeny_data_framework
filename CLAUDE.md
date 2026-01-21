@@ -29,10 +29,10 @@ python table_functions.py data/earthquakes/  # All files in dir
 - `--filetype {csv,tsv,psv,xlsx,parquet}` - File type (auto-detected from extension)
 - `--separator ","` - Column separator for text files (only used with csv filetype)
 - `--no-header` - File has no header row (generates col_0, col_1, etc.)
-- `--encoding "..."` - Override file encoding (auto-detected by default)
-- `--no-detect-encoding` - Skip encoding detection, use utf-8-sig as default
 - `--excel-skiprows N` - Rows to skip in Excel files
 - `--sample-rows N` - Number of rows to sample for type inference (default: read entire file)
+
+**Note:** Encoding is auto-detected. The framework tries UTF-8 first, then falls back to latin-1 + ftfy for files with non-UTF-8 bytes.
 
 ### Workflow
 
@@ -70,8 +70,7 @@ The CLI outputs JSON keyed by **original filename** with `table_name` (snake_cas
       "already_snake": [[], "type_string"]
     },
     "null_values": ["NA", "None", "N/A"],
-    "encoding": "utf_8",
-    "encoding_confidence": 0.99
+    "encoding": "utf-8"
   }
 }
 ```
@@ -80,8 +79,7 @@ The CLI outputs JSON keyed by **original filename** with `table_name` (snake_cas
 - **Key**: Original filename (for matching in `column_mapping_fn`)
 - **table_name**: Snake_case version of filename stem (for `output_table_naming_fn`)
 - **column_mapping**: Column definitions with automatic snake_case conversion
-- **encoding**: Detected file encoding (e.g., `utf_8`, `cp1252`, `latin-1`). Use `--no-detect-encoding` to skip.
-- **encoding_confidence**: Confidence score (0-1) for the encoding detection
+- **encoding**: How the file was decoded - either `"utf-8"` or `"latin-1+ftfy"` (for non-UTF-8 files)
 - **null_values**: (optional) List of detected null value representations in the data. Only included if custom null values are found. Common patterns detected: `NA`, `N/A`, `None`, `NULL`, `NaN`, `.`, `-`
 
 **Column Name Conversion:**
@@ -168,79 +166,58 @@ update_table(
 
 This maintains single source of truth for column names.
 
-### 2. Character Encoding Support
+### 2. Automatic Encoding Detection
 
-The framework supports non-UTF-8 encodings like CP-1252 (Windows-1252), common in Excel exports.
+The framework automatically handles file encodings using a robust two-step approach:
 
-**For `add_files_to_metadata_table()`:**
+1. **Try UTF-8 first** - most modern files use UTF-8
+2. **Fall back to latin-1 + ftfy** - for files with non-UTF-8 bytes, decode as latin-1 (which accepts any byte) and use the `ftfy` library to fix encoding issues (mojibake)
+
+This handles:
+- Pure UTF-8 files
+- Windows CP-1252 files (smart quotes, accented characters)
+- Mixed encoding files (common when data comes from multiple sources)
+- Files with problematic bytes like `0x81` (undefined in CP-1252)
+
+**No encoding parameter needed** - encoding is always auto-detected.
+
+**Example files that work automatically:**
 ```python
+# All these work without specifying encoding:
 add_files_to_metadata_table(
     conninfo="postgresql://user:pass@host/db",
     schema="raw",
-    source_dir="s3://my-bucket/data/",  # or local path
+    source_dir="data/mixed_encodings/",  # UTF-8, CP-1252, latin-1 - all handled
     filetype="csv",
-    encoding="cp1252",  # Specify encoding
 )
-```
 
-**For `update_table()` - direct encoding parameter:**
-```python
 update_table(
     conninfo="postgresql://user:pass@host/db",
     schema="raw",
     output_table="my_table",
     filetype="csv",
-    source_dir="s3://my-bucket/data/",  # matches source_dir in metadata
+    source_dir="data/mixed_encodings/",
     column_mapping=column_mapping,
-    encoding="cp1252",  # Simply specify encoding!
 )
 ```
 
-**Alternative - use `custom_read_fn` for custom logic:**
+**For custom reading logic, use `custom_read_fn`:**
 ```python
 import pandas as pd
 
-def read_cp1252_csv(full_path):
-    return pd.read_csv(
-        full_path,
-        encoding='cp1252',
-        dtype={
-            'Name': 'string',
-            'City': 'string',
-            'Price': 'float64',
-        }
-    )
+def custom_reader(full_path):
+    # Custom logic for special cases
+    return pd.read_csv(full_path, dtype={'col': 'string'})
 
 update_table(
     conninfo="postgresql://user:pass@host/db",
     schema="raw",
     output_table="my_table",
     filetype="csv",
-    source_dir="s3://my-bucket/data/",
-    custom_read_fn=read_cp1252_csv,
+    source_dir="data/special/",
+    custom_read_fn=custom_reader,
 )
 ```
-
-**For schema inference CLI:**
-```bash
-python table_functions.py data/file.csv --encoding cp1252 --pretty
-```
-
-**Common encodings:**
-- `utf-8` - Universal (default)
-- `cp1252` - Windows-1252, Excel exports
-- `latin1` - ISO-8859-1, Western European
-- `utf-8-sig` - UTF-8 with BOM
-
-**Detect encoding:**
-```python
-import chardet
-with open('file.csv', 'rb') as f:
-    result = chardet.detect(f.read())
-    print(result['encoding'])  # e.g., 'Windows-1252'
-```
-
-See `example_encoding.py` for a complete demo.
 
 ### 3. S3 Support
 

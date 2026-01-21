@@ -1025,7 +1025,6 @@ class TestMetadataFunctions:
             source_dir=str(temp_dir) + "/",
             filetype="csv",
             has_header=True,
-            encoding="utf-8-sig",
         )
 
         assert row["source_path"] == sample_csv_file.as_posix()
@@ -1663,7 +1662,6 @@ class TestIntegration:
             filetype="csv",
             has_header=True,
             source_path_list=[],
-            encoding="utf-8",
         )
 
         assert len(rows) == 1
@@ -1685,8 +1683,7 @@ class TestIntegration:
                 filetype="csv",
                 resume=False,
                 sample=None,
-                encoding="utf-8",
-                archive_glob="*.csv",
+                    archive_glob="*.csv",
             )
 
             assert len(rows) == 2  # Two CSV files in the ZIP
@@ -1722,8 +1719,7 @@ class TestIntegration:
                 filetype="csv",
                 resume=False,
                 sample=None,
-                encoding="utf-8",
-                archive_glob="*.csv",
+                    archive_glob="*.csv",
             )
 
             assert len(rows) == 2
@@ -1764,8 +1760,7 @@ class TestIntegration:
                 filetype="csv",
                 resume=False,
                 sample=None,
-                encoding="utf-8",
-                archive_glob="*.csv",
+                    archive_glob="*.csv",
             )
 
             # Count temp dirs after
@@ -2726,7 +2721,6 @@ class TestAddFilesToMetadataTableEndToEnd:
             source_dir=str(source_dir) + "/",
             filetype="csv",
             has_header=True,
-            encoding="utf-8",
             resume=False,
         )
 
@@ -2768,8 +2762,7 @@ class TestAddFilesToMetadataTableEndToEnd:
                 compression_type="zip",
                 archive_glob="*.csv",
                 has_header=True,
-                encoding="utf-8",
-                resume=False,
+                    resume=False,
             )
 
             # Verify metadata table was populated
@@ -2802,7 +2795,6 @@ class TestAddFilesToMetadataTableEndToEnd:
             source_dir=str(source_dir) + "/",
             filetype="csv",
             has_header=True,
-            encoding="utf-8",
             resume=False,
         )
 
@@ -2817,7 +2809,6 @@ class TestAddFilesToMetadataTableEndToEnd:
             source_dir=str(source_dir) + "/",
             filetype="csv",
             has_header=True,
-            encoding="utf-8",
             resume=True,
         )
 
@@ -2848,7 +2839,6 @@ class TestAddFilesToMetadataTableEndToEnd:
             source_dir=str(source_dir) + "/",
             filetype="csv",
             has_header=True,
-            encoding="utf-8",
             file_list_filter_fn=file_list_filter_fn,
             resume=False,
         )
@@ -3225,8 +3215,8 @@ class TestCLISchemaInference:
         output = result.stdout + result.stderr
         assert "Error" in output or "not found" in output.lower()
 
-    def test_cli_encoding_detection_default(self, temp_dir):
-        """Test CLI detects encoding by default"""
+    def test_cli_encoding_utf8_file(self, temp_dir):
+        """Test CLI auto-detects UTF-8 encoding"""
         import subprocess
 
         csv_file = temp_dir / "test.csv"
@@ -3242,41 +3232,18 @@ class TestCLISchemaInference:
         assert result.returncode == 0
         output = json.loads(result.stdout)
 
-        # Should have encoding detected by default
+        # Should have encoding info
         assert "test.csv" in output
         assert "encoding" in output["test.csv"]
-        assert "encoding_confidence" in output["test.csv"]
-        assert output["test.csv"]["encoding_confidence"] > 0
+        assert output["test.csv"]["encoding"] == "utf-8"
 
-    def test_cli_encoding_detection_disabled(self, temp_dir):
-        """Test CLI --no-detect-encoding flag skips encoding detection"""
-        import subprocess
-
-        csv_file = temp_dir / "test.csv"
-        csv_file.write_text("name,value\nAlice,100\n")
-
-        result = subprocess.run(
-            ["python", "table_functions.py", str(csv_file), "--no-detect-encoding"],
-            capture_output=True,
-            text=True,
-            cwd=Path(__file__).parent.parent,
-        )
-
-        assert result.returncode == 0
-        output = json.loads(result.stdout)
-
-        # Should NOT have encoding info when --no-detect-encoding is used
-        assert "test.csv" in output
-        assert "encoding" not in output["test.csv"]
-        assert "encoding_confidence" not in output["test.csv"]
-
-    def test_cli_encoding_detection_cp1252(self, temp_dir):
-        """Test CLI detects CP1252/Windows-1252 encoding"""
+    def test_cli_encoding_non_utf8_uses_ftfy(self, temp_dir):
+        """Test CLI uses latin-1+ftfy for non-UTF-8 files"""
         import subprocess
 
         csv_file = temp_dir / "windows.csv"
-        # CP1252 specific characters: € (0x80), smart quotes, etc.
-        csv_file.write_bytes(b"name,city\nCaf\xe9,M\xfcnchen\n")  # é and ü in CP1252
+        # CP1252 specific characters - not valid UTF-8
+        csv_file.write_bytes(b"name,city\nCaf\xe9,M\xfcnchen\n")  # é and ü in CP1252/latin-1
 
         result = subprocess.run(
             ["python", "table_functions.py", str(csv_file)],
@@ -3288,24 +3255,21 @@ class TestCLISchemaInference:
         assert result.returncode == 0
         output = json.loads(result.stdout)
 
-        # Should detect a non-UTF8 encoding
+        # Should use latin-1+ftfy fallback
         assert "windows.csv" in output
         assert "encoding" in output["windows.csv"]
-        # Should be something like latin-1, cp1252, or iso-8859
-        encoding = output["windows.csv"]["encoding"]
-        assert encoding in ["cp1252", "latin-1", "iso_8859_1", "windows_1252"]
+        assert output["windows.csv"]["encoding"] == "latin-1+ftfy"
 
     def test_cli_encoding_detection_non_ascii_late_in_file(self, temp_dir):
-        """Test CLI detects encoding when non-ASCII bytes appear late in file"""
+        """Test CLI handles non-ASCII bytes appearing late in file"""
         import subprocess
 
         csv_file = temp_dir / "late_special.csv"
-        # Create file with 200KB of ASCII data followed by CP1252 characters
-        # This ensures detection reads the whole file, not just the first 100KB
+        # Create file with 200KB of ASCII data followed by non-UTF-8 characters
         ascii_rows = b"id,name,value\n" + b"".join(
             f"{i},item_{i},{i * 10}\n".encode("ascii") for i in range(10000)
         )
-        # Add rows with CP1252 characters at the end (é=0xe9, ü=0xfc, ó=0xf3)
+        # Add rows with latin-1/CP1252 characters at the end (é=0xe9, ü=0xfc, ñ=0xf1)
         special_rows = b"10001,Caf\xe9,100\n10002,M\xfcnchen,200\n10003,Espa\xf1ol,300\n"
         csv_file.write_bytes(ascii_rows + special_rows)
 
@@ -3319,23 +3283,20 @@ class TestCLISchemaInference:
         assert result.returncode == 0
         output = json.loads(result.stdout)
 
-        # Should successfully detect and parse with correct encoding
+        # Should successfully parse using latin-1+ftfy
         assert "late_special.csv" in output
         assert "encoding" in output["late_special.csv"]
-        # Should detect an 8-bit encoding (not UTF-8) that can handle the bytes
-        encoding = output["late_special.csv"]["encoding"]
-        assert encoding != "utf_8" and encoding != "ascii", \
-            f"Expected non-UTF8 encoding, got {encoding}"
+        assert output["late_special.csv"]["encoding"] == "latin-1+ftfy"
         # Should have successfully inferred the schema (not errored)
         assert "column_mapping" in output["late_special.csv"]
         assert "id" in output["late_special.csv"]["column_mapping"]
 
-    def test_cli_encoding_fallback_to_latin1(self, temp_dir):
-        """Test CLI falls back to latin-1 when detected encoding can't decode bytes"""
+    def test_cli_encoding_handles_problematic_bytes(self, temp_dir):
+        """Test CLI handles bytes that are undefined in CP-1252 (like 0x81)"""
         import subprocess
 
         csv_file = temp_dir / "problematic.csv"
-        # 0x81 is undefined in most Windows codepages but valid in latin-1
+        # 0x81 is undefined in CP-1252 but valid in latin-1
         csv_file.write_bytes(b"name,value\ntest\x81data,100\n")
 
         result = subprocess.run(
@@ -3348,12 +3309,10 @@ class TestCLISchemaInference:
         assert result.returncode == 0
         output = json.loads(result.stdout)
 
-        # Should successfully parse by falling back to latin-1
+        # Should successfully parse using latin-1+ftfy
         assert "problematic.csv" in output
         assert "column_mapping" in output["problematic.csv"]
-        # Encoding should be latin-1 (fallback) with 0.0 confidence
-        assert output["problematic.csv"]["encoding"] == "latin-1"
-        assert output["problematic.csv"]["encoding_confidence"] == 0.0
+        assert output["problematic.csv"]["encoding"] == "latin-1+ftfy"
 
 
 # ===== CONNECTION AND SQL HELPER TESTS =====
@@ -3417,8 +3376,9 @@ class TestEncodings:
         """Test reading Windows-1252 encoded file"""
         # Create file with Windows-1252 encoding
         csv_path = temp_dir / "cp1252.csv"
-        content = "name,value\nTest1,100\nTest2,200\n"
-        csv_path.write_bytes(content.encode('cp1252'))
+        # CP-1252 smart quotes - should be auto-detected and fixed by ftfy
+        content = b"name,value\nTest\x92s,100\nTest2,200\n"  # \x92 is right single quote in CP-1252
+        csv_path.write_bytes(content)
 
         column_mapping = {
             "name": ([], "string"),
@@ -3429,18 +3389,19 @@ class TestEncodings:
             full_path=str(csv_path),
             column_mapping=column_mapping,
             has_header=True,
-            encoding="cp1252",
         )
 
         assert len(df) == 2
-        assert df["name"][0] == "Test1"
+        # ftfy converts CP-1252 smart quote to proper apostrophe
+        assert "'" in df["name"][0] or "'" in df["name"][0]  # Either straight or curly apostrophe
         assert df["value"][1] == 200
 
     def test_read_csv_latin1_encoding(self, temp_dir):
-        """Test reading Latin-1 encoded file"""
+        """Test reading Latin-1 encoded file with special chars"""
         csv_path = temp_dir / "latin1.csv"
-        content = "name,value\nTest1,100\nTest2,200\n"
-        csv_path.write_bytes(content.encode('latin-1'))
+        # UTF-8 encoded as bytes - when decoded as latin-1 and fixed by ftfy, should work
+        content = b"name,value\nJos\xc3\xa9,100\nTest2,200\n"  # José in UTF-8 bytes
+        csv_path.write_bytes(content)
 
         column_mapping = {
             "name": ([], "string"),
@@ -3451,12 +3412,68 @@ class TestEncodings:
             full_path=str(csv_path),
             column_mapping=column_mapping,
             has_header=True,
-            encoding="latin-1",
         )
 
         assert len(df) == 2
-        assert df["name"][0] == "Test1"
+        # ftfy should fix the UTF-8 mojibake
+        assert df["name"][0] == "José"
         assert df["name"][1] == "Test2"
+
+    def test_decode_file_content_utf8(self, temp_dir):
+        """Test decode_file_content with pure UTF-8 file"""
+        from table_functions import decode_file_content
+
+        csv_path = temp_dir / "utf8.csv"
+        csv_path.write_text("name,value\nJosé,100\n", encoding="utf-8")
+
+        result = decode_file_content(str(csv_path))
+
+        assert result["encoding"] == "utf-8"
+        assert "José" in result["content"]
+
+    def test_decode_file_content_non_utf8(self, temp_dir):
+        """Test decode_file_content with non-UTF-8 file uses ftfy"""
+        from table_functions import decode_file_content
+
+        csv_path = temp_dir / "latin1.csv"
+        # CP-1252/latin-1 encoded é (0xe9)
+        csv_path.write_bytes(b"name,value\nCaf\xe9,100\n")
+
+        result = decode_file_content(str(csv_path))
+
+        assert result["encoding"] == "latin-1+ftfy"
+        # ftfy should fix the character
+        assert "Café" in result["content"]
+
+    def test_decode_file_content_mixed_encoding(self, temp_dir):
+        """Test decode_file_content with mixed UTF-8 and CP-1252"""
+        from table_functions import decode_file_content
+
+        csv_path = temp_dir / "mixed.csv"
+        # Mix of UTF-8 name (José = \xc3\xa9) and CP-1252 smart quotes (\x93\x94)
+        csv_path.write_bytes(b"name,description\nJos\xc3\xa9,He said \x93hello\x94\n")
+
+        result = decode_file_content(str(csv_path))
+
+        assert result["encoding"] == "latin-1+ftfy"
+        # ftfy should fix both the UTF-8 mojibake and CP-1252 quotes
+        assert "José" in result["content"]
+        assert '"hello"' in result["content"]
+
+    def test_decode_file_content_problematic_byte_0x81(self, temp_dir):
+        """Test decode_file_content handles 0x81 byte (undefined in CP-1252)"""
+        from table_functions import decode_file_content
+
+        csv_path = temp_dir / "problematic.csv"
+        # 0x81 is undefined in CP-1252 but valid in latin-1
+        csv_path.write_bytes(b"name,value\ntest\x81data,100\n")
+
+        result = decode_file_content(str(csv_path))
+
+        # Should not crash - uses latin-1+ftfy
+        assert result["encoding"] == "latin-1+ftfy"
+        assert "test" in result["content"]
+        assert "data" in result["content"]
 
 
 # ===== EXCEL EDGE CASE TESTS =====
@@ -3846,7 +3863,6 @@ class TestCsvHeaderRowCountEdgeCases:
         csv_path.write_bytes(b"name,value\r\nAlice,100\r\nBob,200\r\n")
 
         header, row_count = get_csv_header_and_row_count(
-            encoding="utf-8",
             file=str(csv_path),
             separator=",",
             has_header=True
@@ -3861,7 +3877,6 @@ class TestCsvHeaderRowCountEdgeCases:
         csv_path.write_text("name,value\nAlice,100\n")
 
         header, row_count = get_csv_header_and_row_count(
-            encoding="utf-8",
             file=str(csv_path),
             separator=",",
             has_header=True
@@ -3875,7 +3890,6 @@ class TestCsvHeaderRowCountEdgeCases:
         csv_path.write_text("name,value\n")
 
         header, row_count = get_csv_header_and_row_count(
-            encoding="utf-8",
             file=str(csv_path),
             separator=",",
             has_header=True
@@ -3890,7 +3904,6 @@ class TestCsvHeaderRowCountEdgeCases:
         csv_path.write_text("user-name,total$amount,count#items\nAlice,100,5\n")
 
         header, row_count = get_csv_header_and_row_count(
-            encoding="utf-8",
             file=str(csv_path),
             separator=",",
             has_header=True
@@ -4353,7 +4366,6 @@ class TestS3GetFileMetadataRow:
             filetype="csv",
             has_header=True,
             error_message=None,
-            encoding="utf-8",
         )
 
         # Assertions
@@ -4373,7 +4385,6 @@ class TestS3GetFileMetadataRow:
             filetype="csv",
             has_header=True,
             error_message="Test error",
-            encoding="utf-8",
         )
 
         # Assertions
@@ -4403,7 +4414,6 @@ class TestS3AddFilesWithS3:
             filetype="csv",
             has_header=True,
             source_path_list=[],
-            encoding="utf-8",
         )
 
         # Assertions
@@ -4721,8 +4731,7 @@ class TestArchiveResumeSkipsProcessedFiles:
                 filetype="csv",
                 resume=True,
                 sample=None,
-                encoding="utf-8",
-                archive_glob="*.csv",
+                    archive_glob="*.csv",
             )
 
             # Should only return 1 row (c.csv), skipping a.csv and b.csv
@@ -4766,8 +4775,7 @@ class TestArchiveResumeSkipsProcessedFiles:
                 filetype="csv",
                 resume=False,  # Not resuming
                 sample=None,
-                encoding="utf-8",
-                archive_glob="*.csv",
+                    archive_glob="*.csv",
             )
 
             # Should return all 3 files
