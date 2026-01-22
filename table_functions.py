@@ -1175,7 +1175,7 @@ def _update_table_impl(
                     pass  # Ignore cleanup failures
 
             print(
-                f"{i + 1}/{total_files_to_be_processed} Ingested {source_path} -> {schema}.{table_name}"
+                f"{i + 1}/{total_files_to_be_processed} Ingested {source_path} -> {schema}.{table_name} ({len(df)} rows)"
             )
 
         except Exception as e:
