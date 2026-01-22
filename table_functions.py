@@ -256,7 +256,7 @@ def download_s3_file_with_cache(
 
     # Get S3 file size
     s3_info = filesystem.info(s3_path)
-    s3_size = s3_info['size']
+    s3_size = s3_info["size"]
 
     # Check if cached file exists and matches size
     if cache_path.exists():
@@ -445,6 +445,7 @@ def read_csv(
 
     if not header:
         import csv
+
         reader = csv.reader(StringIO(file_content), delimiter=separator)
         header = next(reader)
 
@@ -1077,14 +1078,18 @@ def _update_table_impl(
 
         unpivot_row_multiplier = None
         table_name = (
-            output_table_naming_fn(Path(cache_path)) if output_table_naming_fn else output_table
+            output_table_naming_fn(Path(cache_path))
+            if output_table_naming_fn
+            else output_table
         )
         try:
             if custom_read_fn:
                 df = custom_read_fn(full_path=str(cache_path))
             else:
                 column_mapping_use = (
-                    column_mapping_fn(Path(cache_path)) if column_mapping_fn else column_mapping
+                    column_mapping_fn(Path(cache_path))
+                    if column_mapping_fn
+                    else column_mapping
                 )
 
                 df = read_using_column_mapping(
@@ -1165,7 +1170,9 @@ def _update_table_impl(
                 except Exception:
                     pass  # Ignore cleanup failures
 
-            print(f"{i + 1}/{total_files_to_be_processed} Ingested {source_path} -> {schema}.{table_name}")
+            print(
+                f"{i + 1}/{total_files_to_be_processed} Ingested {source_path} -> {schema}.{table_name}"
+            )
 
         except Exception as e:
             error_str = str(e)
@@ -1324,7 +1331,9 @@ def extract_and_add_zip_files(
             ]
 
             if not namelist:
-                print(f"No files matching '{archive_glob}' in {path_basename(archive_path)}, trying next archive...")
+                print(
+                    f"No files matching '{archive_glob}' in {path_basename(archive_path)}, trying next archive..."
+                )
                 continue
 
             for inner_path in namelist:
@@ -1341,7 +1350,9 @@ def extract_and_add_zip_files(
 
                 # Check if already processed
                 if resume and source_path in source_path_set:
-                    print(f"{file_num} Skipped (in metadata): {path_basename(inner_path)}")
+                    print(
+                        f"{file_num} Skipped (in metadata): {path_basename(inner_path)}"
+                    )
                     continue
 
                 # Get cache path for extracted file
@@ -1350,7 +1361,9 @@ def extract_and_add_zip_files(
                 try:
                     # Check if already extracted to cache
                     if cache_path.exists():
-                        print(f"{file_num} Cache hit: {cache_path.relative_to(Path.cwd())}")
+                        print(
+                            f"{file_num} Cache hit: {cache_path.relative_to(Path.cwd())}"
+                        )
                     else:
                         # Extract to temp directory, then move to cache location
                         # Using extract() + move instead of read() to avoid loading entire file into RAM
@@ -1632,9 +1645,7 @@ def add_files_to_metadata_table(
             temp_dir_context.cleanup()
 
 
-def _add_files_to_metadata_table_impl(
-    conninfo: str, **kwargs: Any
-) -> pd.DataFrame:
+def _add_files_to_metadata_table_impl(conninfo: str, **kwargs: Any) -> pd.DataFrame:
     """Internal implementation of add_files_to_metadata_table"""
     schema = kwargs.pop("schema", None)
     if not schema:
@@ -1786,7 +1797,11 @@ def _add_files_to_metadata_table_impl(
         with psycopg.connect(conninfo) as conn:
             with conn.cursor() as cur:
                 for archive_path, processed_count in archive_stats.items():
-                    status = "Success" if processed_count >= expected_archive_file_count else "Partial"
+                    status = (
+                        "Success"
+                        if processed_count >= expected_archive_file_count
+                        else "Partial"
+                    )
                     cur.execute(
                         f"""
                         INSERT INTO {archive_metadata_table}
@@ -1929,7 +1944,8 @@ def drop_partition(
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                f"DELETE FROM {schema}.{table} WHERE source_path LIKE %s", (partition_key,)
+                f"DELETE FROM {schema}.{table} WHERE source_path LIKE %s",
+                (partition_key,),
             )
             print(f"Deleted {cur.rowcount} rows")
         conn.commit()
@@ -1961,13 +1977,17 @@ def drop_file_from_metadata_and_table(
         conn.commit()
 
     # Delete from data table
-    drop_partition(conninfo=conninfo, table=table, partition_key=source_path, schema=schema)
+    drop_partition(
+        conninfo=conninfo, table=table, partition_key=source_path, schema=schema
+    )
 
 
 # CLI SCHEMA INFERENCE FUNCTIONS
 
 
-def decode_file_content(file_path: str, encoding: Optional[str] = None) -> Dict[str, Any]:
+def decode_file_content(
+    file_path: str, encoding: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Decode file content with specified encoding.
 
@@ -2014,31 +2034,16 @@ def to_snake_case(name: str) -> str:
     )
 
 
-def _map_duckdb_type(duckdb_type: str) -> str:
-    """Map DuckDB type to our type string"""
-    duckdb_type = duckdb_type.upper()
-    if duckdb_type in ("BIGINT", "INTEGER", "SMALLINT", "TINYINT", "HUGEINT", "UBIGINT", "UINTEGER", "USMALLINT", "UTINYINT"):
-        return "int"
-    elif duckdb_type in ("DOUBLE", "FLOAT", "REAL", "DECIMAL"):
-        return "float"
-    elif duckdb_type in ("DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIME"):
-        return "datetime"
-    elif duckdb_type == "BOOLEAN":
-        return "boolean"
-    else:
-        return "string"
-
-
 def infer_schema_from_file(
     file_path: str,
     filetype: Optional[str] = None,
     has_header: bool = True,
     encoding: Optional[str] = None,
     excel_skiprows: int = 0,
-    sample_rows: Optional[int] = None,
+    sample_rows: int = 20000,
 ) -> Dict[str, Any]:
     """
-    Infer schema from file using DuckDB's fast CSV sniffer for text files.
+    Infer schema from file using pandas.
 
     Args:
         file_path: Path to the file
@@ -2046,9 +2051,9 @@ def infer_schema_from_file(
         has_header: Whether the file has a header row
         encoding: File encoding (e.g., "utf-8", "latin-1"). Defaults to "utf-8".
         excel_skiprows: Rows to skip in Excel files
-        sample_rows: Number of rows to sample for type inference (None = read entire file)
+        sample_rows: Number of rows to sample for type inference (default: 20000)
 
-    Note: For CSV/TSV/PSV files, the delimiter is auto-detected by DuckDB.
+    Note: For CSV/TSV/PSV files, the delimiter is auto-detected.
 
     Returns:
         Dictionary with:
@@ -2066,30 +2071,64 @@ def infer_schema_from_file(
         filetype = ext if ext in ["csv", "tsv", "psv", "xlsx", "parquet"] else "csv"
 
     if filetype in ["csv", "tsv", "psv"]:
-        import duckdb
-
         encoding = encoding or "utf-8"
+        
+        sep = None
+        if filetype == "tsv":
+            sep = "\t"
+        elif filetype == "psv":
+            sep = "|"
+        else:
+            # Attempt to sniff delimiter for CSV
+            try:
+                import csv
+                with open(file_path, "r", encoding=encoding, errors="replace") as f:
+                    # Read a sample
+                    sample = f.read(4096)
+                    if sample.startswith("\ufeff"):
+                        sample = sample[1:]
+                    
+                    if sample:
+                        sniffer = csv.Sniffer()
+                        # prefer commonly used delimiters
+                        dialect = sniffer.sniff(sample, delimiters=[",", ";", "\t", "|"])
+                        sep = dialect.delimiter
+            except Exception:
+                # Fallback to default comma if sniffing fails
+                pass
+        
+        # Default to comma if still None (e.g. sniffing failed or filetype=csv with no sniffed sep)
+        if sep is None:
+            sep = ","
 
-        conn = duckdb.connect()
-
-        # Build sniff_csv options
-        sample_size = sample_rows or -1
-        sniff_opts = f"sample_size={sample_size}, null_padding=true, strict_mode=false, encoding='{encoding}'"
-        if not has_header:
-            sniff_opts += ", header=false"
-
-        result = conn.execute(f"SELECT * FROM sniff_csv('{file_path}', {sniff_opts})").fetchone()
-
-        # Schema is at index 7
-        schema = result[7]
+        try:
+            df = pd.read_csv(
+                file_path,
+                sep=sep,
+                encoding=encoding,
+                header=0 if has_header else None,
+                nrows=sample_rows,
+                on_bad_lines="skip",
+            )
+        except pd.errors.EmptyDataError:
+            # Handle empty file
+            return {"column_mapping": {}, "null_values": None, "encoding": encoding}
 
         # Build column mapping
         column_mapping = {}
-        for i, col_info in enumerate(schema):
-            original_col = col_info["name"] if has_header else f"col_{i}"
-            # Strip surrounding quotes (pandas does this automatically, DuckDB doesn't)
-            original_col = original_col.strip('"')
-            type_string = _map_duckdb_type(col_info["type"])
+        for i, col in enumerate(df.columns):
+            if has_header:
+                original_col = str(col)
+                series = df[col]
+            else:
+                original_col = f"col_{i}"
+                series = df[col]  # df columns are integers when header=None
+
+            if series.isna().all():
+                type_string = "string"
+            else:
+                type_string = _infer_column_mapping_type(series.dtype)
+
             snake_case_col = to_snake_case(original_col)
 
             if snake_case_col == original_col:
@@ -2097,9 +2136,11 @@ def infer_schema_from_file(
             else:
                 column_mapping[snake_case_col] = ([original_col], type_string)
 
-        conn.close()
-
-        return {"column_mapping": column_mapping, "null_values": None, "encoding": encoding}
+        return {
+            "column_mapping": column_mapping,
+            "null_values": None,
+            "encoding": encoding,
+        }
 
     elif filetype == "xlsx":
         # Excel files: use pandas (DuckDB xlsx support requires extension)
@@ -2158,7 +2199,7 @@ Examples:
   python table_functions.py data/raw/my_file.parquet --sample-rows 5000
   python table_functions.py data/raw/  # Infer all files in directory
 
-Note: Delimiter is auto-detected by DuckDB for CSV/TSV/PSV files.
+Note: Delimiter is auto-detected for CSV/TSV/PSV files.
         """,
     )
 
@@ -2189,8 +2230,8 @@ Note: Delimiter is auto-detected by DuckDB for CSV/TSV/PSV files.
     parser.add_argument(
         "--sample-rows",
         type=int,
-        default=None,
-        help="Number of rows to sample for type inference (default: read entire file)",
+        default=20000,
+        help="Number of rows to sample for type inference (default: 20000)",
     )
 
     parser.add_argument(
@@ -2219,10 +2260,13 @@ Note: Delimiter is auto-detected by DuckDB for CSV/TSV/PSV files.
                 extensions = [".csv", ".tsv", ".psv", ".xlsx", ".parquet"]
 
             # Find all matching files in directory (non-recursive)
-            files = sorted([
-                f for f in input_path.iterdir()
-                if f.is_file() and f.suffix.lower() in extensions
-            ])
+            files = sorted(
+                [
+                    f
+                    for f in input_path.iterdir()
+                    if f.is_file() and f.suffix.lower() in extensions
+                ]
+            )
 
             if not files:
                 print(f"Error: No matching files found in {args.path}", file=sys.stderr)
@@ -2235,7 +2279,10 @@ Note: Delimiter is auto-detected by DuckDB for CSV/TSV/PSV files.
             total_files = len(files)
             for i, file_path in enumerate(files):
                 try:
-                    print(f"{i + 1}/{total_files} Inferring schema: {file_path.name}", file=sys.stderr)
+                    print(
+                        f"{i + 1}/{total_files} Inferring schema: {file_path.name}",
+                        file=sys.stderr,
+                    )
                     result = infer_schema_from_file(
                         file_path=str(file_path),
                         filetype=args.filetype,
@@ -2254,7 +2301,10 @@ Note: Delimiter is auto-detected by DuckDB for CSV/TSV/PSV files.
                         file_output["encoding"] = result["encoding"]
                     output[file_path.name] = file_output
                 except Exception as e:
-                    print(f"{i + 1}/{total_files} Failed: {file_path.name} - {e}", file=sys.stderr)
+                    print(
+                        f"{i + 1}/{total_files} Failed: {file_path.name} - {e}",
+                        file=sys.stderr,
+                    )
                     output[file_path.name] = {"error": str(e)}
 
             # Output as JSON (pretty-printed)

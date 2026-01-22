@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "inflection>=0.5.1",
-  "duckdb>=1.4.3",
   "fastexcel>=0.18.0",
   "marimo>=0.19.1",
   "openpyxl>=3.1.5",

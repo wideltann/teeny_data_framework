@@ -1466,7 +1466,7 @@ Dave,N/A,70.0,NULL
             has_header=True,
         )
 
-        # DuckDB handles nulls internally but doesn't report detected null patterns
+        # Pandas handles nulls internally but doesn't report detected null patterns
         # The important thing is that the schema is still correctly inferred
         assert "column_mapping" in result
         assert "name" in result["column_mapping"]
@@ -2937,7 +2937,7 @@ class TestCLISchemaInference:
         """Test CLI auto-detects custom separator (semicolon)"""
         import subprocess
 
-        # Create file with semicolon separator - DuckDB should auto-detect
+        # Create file with semicolon separator - Should auto-detect
         csv_path = temp_dir / "custom_sep.csv"
         csv_path.write_text("name;age;score\nAlice;25;85.5\n")
 
@@ -3819,7 +3819,7 @@ class TestTypeInferenceEdgeCases:
         result = infer_schema_from_file(str(csv_path))
         column_mapping = result["column_mapping"]
 
-        # DuckDB infers empty columns as string (safest default)
+        # We infer empty columns as string (safest default)
         assert "empty_col" in column_mapping
         assert column_mapping["empty_col"][1] == "string"
 
