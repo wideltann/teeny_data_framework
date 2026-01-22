@@ -2072,7 +2072,7 @@ def infer_schema_from_file(
 
     if filetype in ["csv", "tsv", "psv"]:
         encoding = encoding or "utf-8"
-        
+
         sep = None
         if filetype == "tsv":
             sep = "\t"
@@ -2082,21 +2082,24 @@ def infer_schema_from_file(
             # Attempt to sniff delimiter for CSV
             try:
                 import csv
+
                 with open(file_path, "r", encoding=encoding, errors="replace") as f:
                     # Read a sample
                     sample = f.read(4096)
                     if sample.startswith("\ufeff"):
                         sample = sample[1:]
-                    
+
                     if sample:
                         sniffer = csv.Sniffer()
                         # prefer commonly used delimiters
-                        dialect = sniffer.sniff(sample, delimiters=[",", ";", "\t", "|"])
+                        dialect = sniffer.sniff(
+                            sample, delimiters=[",", ";", "\t", "|"]
+                        )
                         sep = dialect.delimiter
             except Exception:
                 # Fallback to default comma if sniffing fails
                 pass
-        
+
         # Default to comma if still None (e.g. sniffing failed or filetype=csv with no sniffed sep)
         if sep is None:
             sep = ","
@@ -2109,6 +2112,7 @@ def infer_schema_from_file(
                 header=0 if has_header else None,
                 nrows=sample_rows,
                 on_bad_lines="skip",
+                low_memory=False,
             )
         except pd.errors.EmptyDataError:
             # Handle empty file
