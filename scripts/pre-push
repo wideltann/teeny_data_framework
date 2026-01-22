@@ -1,7 +1,11 @@
 #!/bin/bash
-# Pre-push hook: Run ALL tests before pushing to remote
+# Pre-push hook: Format code and run ALL tests before pushing to remote
 
 set -e  # Exit immediately on any error
+
+echo "🎨 Formatting code with ruff..."
+uv run ruff format .
+echo ""
 
 echo "🧪 Running tests before push..."
 echo ""

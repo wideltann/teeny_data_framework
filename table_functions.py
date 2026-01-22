@@ -1017,18 +1017,22 @@ def _update_table_impl(
 
     metadata_schema = metadata_schema or schema
 
+    # Use '%' as default glob to match all files in source_dir
+    glob_pattern = sql_glob if sql_glob else "%"
+
     # Query metadata for files to process
     sql = f"""
         SELECT source_path
         FROM {metadata_schema}.metadata
         WHERE
             source_dir LIKE %s AND
+            source_path LIKE %s AND
             metadata_ingest_status = 'Success'
     """
 
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (source_dir,))
+            cur.execute(sql, (source_dir, glob_pattern))
             rows = cur.fetchall()
     file_list = sorted([row[0] for row in rows])
 

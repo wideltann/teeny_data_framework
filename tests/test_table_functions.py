@@ -2689,6 +2689,50 @@ class TestUpdateTableAdvancedFeatures:
         result = execute_sql_fetchone(db_conn, "SELECT name, value FROM test_schema.header_fn_output WHERE name = 'Alice'")
         assert result[0] == "Alice"
 
+    def test_update_table_with_sql_glob_filters_files(self, conninfo, db_conn, temp_dir):
+        """Test that sql_glob filters which files are processed.
+
+        This test verifies that when sql_glob is set, only files matching
+        the pattern are processed, not all files in the source_dir.
+        """
+        # Create CSV files with different naming patterns
+        csv1 = temp_dir / "data_2024.csv"
+        csv1.write_text("name,value\nAlice,100\n")
+        csv2 = temp_dir / "data_2025.csv"
+        csv2.write_text("name,value\nBob,200\n")
+        csv3 = temp_dir / "other_file.csv"
+        csv3.write_text("name,value\nCharlie,300\n")
+
+        # Set up metadata for all files
+        self._setup_metadata_table(db_conn, temp_dir, [(csv1, 1), (csv2, 1), (csv3, 1)])
+
+        column_mapping = {
+            "name": ([], "string"),
+            "value": ([], "int"),
+        }
+
+        # Use sql_glob to only match files starting with "data_"
+        result_df = update_table(
+            conninfo=conninfo,
+            schema="test_schema",
+            output_table="sql_glob_test",
+            filetype="csv",
+            column_mapping=column_mapping,
+            source_dir=str(temp_dir) + "/",
+            sql_glob="%data_%.csv",  # Should match data_2024.csv and data_2025.csv only
+            resume=False,
+        )
+
+        # Verify only 2 files were processed (data_2024.csv and data_2025.csv)
+        # NOT 3 files (should exclude other_file.csv)
+        result = execute_sql_fetchone(db_conn, "SELECT COUNT(*) FROM test_schema.sql_glob_test")
+        assert result[0] == 2, f"Expected 2 rows (from 2 files), got {result[0]}"
+
+        # Verify the correct files were processed
+        result = execute_sql_fetch(db_conn, "SELECT name FROM test_schema.sql_glob_test ORDER BY name")
+        names = [row[0] for row in result]
+        assert names == ["Alice", "Bob"], f"Expected Alice and Bob, got {names}"
+
 
 # ===== ADD_FILES_TO_METADATA_TABLE END-TO-END TESTS =====
 
