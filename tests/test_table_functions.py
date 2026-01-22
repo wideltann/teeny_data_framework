@@ -3232,16 +3232,16 @@ class TestCLISchemaInference:
         assert "encoding" in output["test.csv"]
         assert output["test.csv"]["encoding"] == "utf-8"
 
-    def test_cli_encoding_non_utf8_uses_ftfy(self, temp_dir):
-        """Test CLI uses latin-1+ftfy for non-UTF-8 files"""
+    def test_cli_encoding_explicit_latin1(self, temp_dir):
+        """Test CLI with explicit latin-1 encoding for non-UTF-8 files"""
         import subprocess
 
         csv_file = temp_dir / "windows.csv"
-        # CP1252 specific characters - not valid UTF-8
-        csv_file.write_bytes(b"name,city\nCaf\xe9,M\xfcnchen\n")  # é and ü in CP1252/latin-1
+        # CP1252/latin-1 characters - not valid UTF-8
+        csv_file.write_bytes(b"name,city\nCaf\xe9,M\xfcnchen\n")  # é and ü in latin-1
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(csv_file)],
+            ["python", "table_functions.py", str(csv_file), "--encoding", "latin-1"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3250,13 +3250,13 @@ class TestCLISchemaInference:
         assert result.returncode == 0
         output = json.loads(result.stdout)
 
-        # Should use latin-1+ftfy fallback
+        # Should use latin-1 encoding
         assert "windows.csv" in output
         assert "encoding" in output["windows.csv"]
-        assert output["windows.csv"]["encoding"] == "latin-1+ftfy"
+        assert output["windows.csv"]["encoding"] == "latin-1"
 
-    def test_cli_encoding_detection_non_ascii_late_in_file(self, temp_dir):
-        """Test CLI handles non-ASCII bytes appearing late in file"""
+    def test_cli_encoding_latin1_with_late_special_chars(self, temp_dir):
+        """Test CLI handles latin-1 files with non-ASCII bytes late in file"""
         import subprocess
 
         csv_file = temp_dir / "late_special.csv"
@@ -3269,7 +3269,7 @@ class TestCLISchemaInference:
         csv_file.write_bytes(ascii_rows + special_rows)
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(csv_file)],
+            ["python", "table_functions.py", str(csv_file), "--encoding", "latin-1"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3278,24 +3278,24 @@ class TestCLISchemaInference:
         assert result.returncode == 0
         output = json.loads(result.stdout)
 
-        # Should successfully parse using latin-1+ftfy
+        # Should successfully parse using latin-1 encoding
         assert "late_special.csv" in output
         assert "encoding" in output["late_special.csv"]
-        assert output["late_special.csv"]["encoding"] == "latin-1+ftfy"
+        assert output["late_special.csv"]["encoding"] == "latin-1"
         # Should have successfully inferred the schema (not errored)
         assert "column_mapping" in output["late_special.csv"]
         assert "id" in output["late_special.csv"]["column_mapping"]
 
-    def test_cli_encoding_handles_problematic_bytes(self, temp_dir):
-        """Test CLI handles bytes that are undefined in CP-1252 (like 0x81)"""
+    def test_cli_encoding_latin1_special_chars(self, temp_dir):
+        """Test CLI handles latin-1 special characters (like ñ = 0xf1)"""
         import subprocess
 
-        csv_file = temp_dir / "problematic.csv"
-        # 0x81 is undefined in CP-1252 but valid in latin-1
-        csv_file.write_bytes(b"name,value\ntest\x81data,100\n")
+        csv_file = temp_dir / "special.csv"
+        # 0xf1 is ñ in latin-1
+        csv_file.write_bytes(b"name,value\nEspa\xf1a,100\n")
 
         result = subprocess.run(
-            ["python", "table_functions.py", str(csv_file)],
+            ["python", "table_functions.py", str(csv_file), "--encoding", "latin-1"],
             capture_output=True,
             text=True,
             cwd=Path(__file__).parent.parent,
@@ -3304,10 +3304,10 @@ class TestCLISchemaInference:
         assert result.returncode == 0
         output = json.loads(result.stdout)
 
-        # Should successfully parse using latin-1+ftfy
-        assert "problematic.csv" in output
-        assert "column_mapping" in output["problematic.csv"]
-        assert output["problematic.csv"]["encoding"] == "latin-1+ftfy"
+        # Should successfully parse using latin-1 encoding
+        assert "special.csv" in output
+        assert "column_mapping" in output["special.csv"]
+        assert output["special.csv"]["encoding"] == "latin-1"
 
 
 # ===== CONNECTION AND SQL HELPER TESTS =====
@@ -3368,10 +3368,10 @@ class TestEncodings:
     """Test different file encodings"""
 
     def test_read_csv_cp1252_encoding(self, temp_dir):
-        """Test reading Windows-1252 encoded file"""
+        """Test reading Windows-1252 encoded file with explicit encoding"""
         # Create file with Windows-1252 encoding
         csv_path = temp_dir / "cp1252.csv"
-        # CP-1252 smart quotes - should be auto-detected and fixed by ftfy
+        # CP-1252 smart quotes
         content = b"name,value\nTest\x92s,100\nTest2,200\n"  # \x92 is right single quote in CP-1252
         csv_path.write_bytes(content)
 
@@ -3384,18 +3384,19 @@ class TestEncodings:
             full_path=str(csv_path),
             column_mapping=column_mapping,
             has_header=True,
+            encoding="cp1252",
         )
 
         assert len(df) == 2
-        # ftfy converts CP-1252 smart quote to proper apostrophe
-        assert "'" in df["name"][0] or "'" in df["name"][0]  # Either straight or curly apostrophe
+        # CP-1252 decodes \x92 as right single quote (U+2019)
+        assert "\u2019" in df["name"][0]  # Unicode right single quotation mark
         assert df["value"][1] == 200
 
     def test_read_csv_latin1_encoding(self, temp_dir):
-        """Test reading Latin-1 encoded file with special chars"""
+        """Test reading Latin-1 encoded file with explicit encoding"""
         csv_path = temp_dir / "latin1.csv"
-        # UTF-8 encoded as bytes - when decoded as latin-1 and fixed by ftfy, should work
-        content = b"name,value\nJos\xc3\xa9,100\nTest2,200\n"  # José in UTF-8 bytes
+        # Latin-1 encoded é (0xe9)
+        content = b"name,value\nCaf\xe9,100\nTest2,200\n"
         csv_path.write_bytes(content)
 
         column_mapping = {
@@ -3407,11 +3408,11 @@ class TestEncodings:
             full_path=str(csv_path),
             column_mapping=column_mapping,
             has_header=True,
+            encoding="latin-1",
         )
 
         assert len(df) == 2
-        # ftfy should fix the UTF-8 mojibake
-        assert df["name"][0] == "José"
+        assert df["name"][0] == "Café"
         assert df["name"][1] == "Test2"
 
     def test_decode_file_content_utf8(self, temp_dir):
@@ -3426,47 +3427,45 @@ class TestEncodings:
         assert result["encoding"] == "utf-8"
         assert "José" in result["content"]
 
-    def test_decode_file_content_non_utf8(self, temp_dir):
-        """Test decode_file_content with non-UTF-8 file uses ftfy"""
+    def test_decode_file_content_latin1(self, temp_dir):
+        """Test decode_file_content with explicit latin-1 encoding"""
         from table_functions import decode_file_content
 
         csv_path = temp_dir / "latin1.csv"
-        # CP-1252/latin-1 encoded é (0xe9)
+        # Latin-1 encoded é (0xe9)
         csv_path.write_bytes(b"name,value\nCaf\xe9,100\n")
 
-        result = decode_file_content(str(csv_path))
+        result = decode_file_content(str(csv_path), encoding="latin-1")
 
-        assert result["encoding"] == "latin-1+ftfy"
-        # ftfy should fix the character
+        assert result["encoding"] == "latin-1"
         assert "Café" in result["content"]
 
-    def test_decode_file_content_mixed_encoding(self, temp_dir):
-        """Test decode_file_content with mixed UTF-8 and CP-1252"""
+    def test_decode_file_content_cp1252(self, temp_dir):
+        """Test decode_file_content with explicit cp1252 encoding"""
         from table_functions import decode_file_content
 
-        csv_path = temp_dir / "mixed.csv"
-        # Mix of UTF-8 name (José = \xc3\xa9) and CP-1252 smart quotes (\x93\x94)
-        csv_path.write_bytes(b"name,description\nJos\xc3\xa9,He said \x93hello\x94\n")
+        csv_path = temp_dir / "cp1252.csv"
+        # CP-1252 smart quotes (\x93\x94)
+        csv_path.write_bytes(b"name,description\nTest,He said \x93hello\x94\n")
 
-        result = decode_file_content(str(csv_path))
+        result = decode_file_content(str(csv_path), encoding="cp1252")
 
-        assert result["encoding"] == "latin-1+ftfy"
-        # ftfy should fix both the UTF-8 mojibake and CP-1252 quotes
-        assert "José" in result["content"]
-        assert '"hello"' in result["content"]
+        assert result["encoding"] == "cp1252"
+        # CP-1252 decodes \x93\x94 as curly double quotes (U+201C, U+201D)
+        assert "\u201c" in result["content"]  # Left double quotation mark
+        assert "\u201d" in result["content"]  # Right double quotation mark
 
-    def test_decode_file_content_problematic_byte_0x81(self, temp_dir):
-        """Test decode_file_content handles 0x81 byte (undefined in CP-1252)"""
+    def test_decode_file_content_latin1_handles_0x81(self, temp_dir):
+        """Test decode_file_content handles 0x81 byte with latin-1 encoding"""
         from table_functions import decode_file_content
 
         csv_path = temp_dir / "problematic.csv"
         # 0x81 is undefined in CP-1252 but valid in latin-1
         csv_path.write_bytes(b"name,value\ntest\x81data,100\n")
 
-        result = decode_file_content(str(csv_path))
+        result = decode_file_content(str(csv_path), encoding="latin-1")
 
-        # Should not crash - uses latin-1+ftfy
-        assert result["encoding"] == "latin-1+ftfy"
+        assert result["encoding"] == "latin-1"
         assert "test" in result["content"]
         assert "data" in result["content"]
 

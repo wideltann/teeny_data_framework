@@ -425,23 +425,19 @@ def read_csv(
     has_header: bool = False,
     null_values: Optional[List[str]] = None,
     separator: str = ",",
+    encoding: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Read CSV file and return pandas DataFrame with proper schema and column mapping.
 
-    Encoding is auto-detected: tries UTF-8 first, falls back to latin-1+ftfy.
+    Args:
+        encoding: File encoding (e.g., "utf-8", "latin-1"). Defaults to "utf-8".
     """
     from io import StringIO
-    import ftfy
 
-    # Read file with auto-encoding detection
-    with open(full_path, "rb") as f:
-        raw_bytes = f.read()
-
-    try:
-        file_content = raw_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        file_content = ftfy.fix_text(raw_bytes.decode("latin-1"))
+    encoding = encoding or "utf-8"
+    with open(full_path, "r", encoding=encoding) as f:
+        file_content = f.read()
 
     # Remove BOM if present
     if file_content.startswith("\ufeff"):
@@ -501,6 +497,7 @@ def read_csv(
 def read_fixed_width(
     full_path: Optional[str] = None,
     column_mapping: Optional[Dict[str, Tuple[str, int, int]]] = None,
+    encoding: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Read fixed-width file and return pandas DataFrame using pd.read_fwf
@@ -513,19 +510,15 @@ def read_fixed_width(
     {'column_name': (type, starting_position, field_size)}
 
     Note: starting_position is 1-indexed (first character is position 1)
-    Encoding is auto-detected: tries UTF-8 first, falls back to latin-1+ftfy.
+
+    Args:
+        encoding: File encoding (e.g., "utf-8", "latin-1"). Defaults to "utf-8".
     """
     from io import StringIO
-    import ftfy
 
-    # Read file with auto-encoding detection
-    with open(full_path, "rb") as f:
-        raw_bytes = f.read()
-
-    try:
-        file_content = raw_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        file_content = ftfy.fix_text(raw_bytes.decode("latin-1"))
+    encoding = encoding or "utf-8"
+    with open(full_path, "r", encoding=encoding) as f:
+        file_content = f.read()
 
     # Build colspecs for pandas read_fwf
     # colspecs is a list of (start, end) tuples, 0-indexed
@@ -559,10 +552,13 @@ def read_using_column_mapping(
     has_header: bool = False,
     null_values: Optional[List[str]] = None,
     excel_skiprows: int = 0,
+    encoding: Optional[str] = None,
 ) -> Optional[pd.DataFrame]:
     """
     Router function to read different file types with column mapping.
-    Encoding is auto-detected for text files: tries UTF-8 first, falls back to latin-1+ftfy.
+
+    Args:
+        encoding: File encoding for text files (e.g., "utf-8", "latin-1"). Defaults to "utf-8".
     """
     match filetype:
         case "csv":
@@ -573,6 +569,7 @@ def read_using_column_mapping(
                 header=header,
                 separator=",",
                 null_values=null_values,
+                encoding=encoding,
             )
         case "tsv":
             return read_csv(
@@ -582,6 +579,7 @@ def read_using_column_mapping(
                 header=header,
                 separator="\t",
                 null_values=null_values,
+                encoding=encoding,
             )
         case "psv":
             return read_csv(
@@ -591,6 +589,7 @@ def read_using_column_mapping(
                 header=header,
                 separator="|",
                 null_values=null_values,
+                encoding=encoding,
             )
         case "xlsx":
             return read_xlsx(
@@ -604,6 +603,7 @@ def read_using_column_mapping(
             return read_fixed_width(
                 full_path=full_path,
                 column_mapping=column_mapping,
+                encoding=encoding,
             )
         case _:
             raise ValueError(
@@ -912,6 +912,7 @@ def update_table(
     excel_skiprows: int = 0,
     cleanup: bool = False,
     ephemeral_cache: bool = False,
+    encoding: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Main ingestion function that reads files and writes to PostgreSQL
@@ -922,9 +923,8 @@ def update_table(
         cleanup: If True, delete cached files after successful ingest
         ephemeral_cache: If True, use a temporary directory that is deleted after processing.
                         If False (default), use persistent temp/ directory.
+        encoding: File encoding (e.g. "utf-8", "latin-1", "cp1252"). Defaults to "utf-8".
         ... (other args unchanged)
-
-    Note: Encoding is auto-detected for text files (tries UTF-8 first, falls back to latin-1+ftfy).
     """
     import tempfile
 
@@ -954,6 +954,7 @@ def update_table(
             column_mapping=column_mapping,
             column_mapping_fn=column_mapping_fn,
             pivot_mapping=pivot_mapping,
+            encoding=encoding,
             header_fn=header_fn,
             null_values=null_values,
             excel_skiprows=excel_skiprows,
@@ -990,6 +991,7 @@ def _update_table_impl(
     null_values: Optional[List[str]] = None,
     excel_skiprows: int = 0,
     cleanup: bool = False,
+    encoding: Optional[str] = None,
 ) -> pd.DataFrame:
     """Internal implementation of update_table"""
     import time
@@ -1093,6 +1095,7 @@ def _update_table_impl(
                     has_header=has_header,
                     null_values=null_values,
                     excel_skiprows=excel_skiprows,
+                    encoding=encoding,
                 )
 
             if pivot_mapping:
@@ -1213,28 +1216,24 @@ def get_csv_header_and_row_count(
     file: Optional[str] = None,
     separator: str = ",",
     has_header: bool = True,
+    encoding: Optional[str] = None,
 ) -> Tuple[List[str], int]:
     """
     Get header and row count from CSV file.
     Counts only non-blank lines to match pandas' skip_blank_lines=True behavior.
     File path should be a string.
-    Encoding is auto-detected: tries UTF-8 first, falls back to latin-1+ftfy.
+
+    Args:
+        encoding: File encoding (e.g., "utf-8", "latin-1"). Defaults to "utf-8".
     """
     import subprocess
     import csv
-    import ftfy
 
     file_str = str(file)
+    encoding = encoding or "utf-8"
 
-    # Read first line with auto-encoding detection
-    # Try UTF-8 first, fall back to latin-1+ftfy
-    with open(file_str, "rb") as f:
-        first_line_bytes = f.readline()
-
-    try:
-        first_line = first_line_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        first_line = ftfy.fix_text(first_line_bytes.decode("latin-1"))
+    with open(file_str, "r", encoding=encoding) as f:
+        first_line = f.readline()
 
     # Remove BOM if present
     if first_line.startswith("\ufeff"):
@@ -1277,7 +1276,6 @@ def extract_and_add_zip_files(
     e.g., "s3://bucket/data.zip::folder/file.csv"
 
     Files are extracted to temp/ cache, mirroring the source structure.
-    Encoding is auto-detected (tries UTF-8 first, falls back to latin-1+ftfy).
 
     Returns:
         Tuple of (rows, archive_stats) where:
@@ -1421,7 +1419,6 @@ def add_files(
     For local files: reads directly from source (no copy needed)
 
     source_path is the file's identity (primary key in metadata).
-    Encoding is auto-detected (tries UTF-8 first, falls back to latin-1+ftfy).
     """
     # Normalize source_dir
     source_dir = normalize_path(source_dir) if source_dir else None
@@ -1503,8 +1500,6 @@ def get_file_metadata_row(
         filetype: File type (csv, tsv, psv, etc.)
         has_header: Whether file has header row
         error_message: Error message if extraction failed
-
-    Note: Encoding is auto-detected (tries UTF-8 first, falls back to latin-1+ftfy).
     """
     import hashlib
     import time
@@ -1972,50 +1967,29 @@ def drop_file_from_metadata_and_table(
 # CLI SCHEMA INFERENCE FUNCTIONS
 
 
-def decode_file_content(file_path: str) -> Dict[str, Any]:
+def decode_file_content(file_path: str, encoding: Optional[str] = None) -> Dict[str, Any]:
     """
-    Decode file content with automatic encoding handling.
-
-    Strategy:
-    1. Try UTF-8 first (most common modern encoding)
-    2. If UTF-8 fails, decode as latin-1 (accepts any byte) and use ftfy to fix mojibake
+    Decode file content with specified encoding.
 
     Args:
         file_path: Path to the file
+        encoding: File encoding (e.g., "utf-8", "latin-1"). Defaults to "utf-8".
 
     Returns:
         Dictionary with:
         {
             "content": "decoded string content",
-            "encoding": "utf-8" or "latin-1+ftfy",
-            "raw_bytes": b"..."  # Original bytes for reuse
+            "encoding": "utf-8" or specified encoding,
         }
     """
-    import ftfy
+    encoding = encoding or "utf-8"
 
-    with open(file_path, "rb") as f:
-        raw_bytes = f.read()
+    with open(file_path, "r", encoding=encoding) as f:
+        content = f.read()
 
-    # Try UTF-8 first
-    try:
-        content = raw_bytes.decode("utf-8")
-        return {
-            "content": content,
-            "encoding": "utf-8",
-            "raw_bytes": raw_bytes,
-        }
-    except UnicodeDecodeError:
-        import sys
-        print(f"UTF-8 decoding failed for {file_path}, falling back to latin-1 + ftfy", file=sys.stderr)
-
-    # Fall back to latin-1 + ftfy
-    # latin-1 can decode any byte (0x00-0xFF map to U+0000-U+00FF)
-    # ftfy then fixes mojibake patterns (e.g., UTF-8 decoded as latin-1)
-    content = ftfy.fix_text(raw_bytes.decode("latin-1"))
     return {
         "content": content,
-        "encoding": "latin-1+ftfy",
-        "raw_bytes": raw_bytes,
+        "encoding": encoding,
     }
 
 
@@ -2070,7 +2044,7 @@ def infer_schema_from_file(
         file_path: Path to the file
         filetype: File type (csv, tsv, psv, xlsx, parquet). If None, auto-detects from extension.
         has_header: Whether the file has a header row
-        encoding: File encoding. If None, auto-detects (tries UTF-8, falls back to latin-1+ftfy)
+        encoding: File encoding (e.g., "utf-8", "latin-1"). Defaults to "utf-8".
         excel_skiprows: Rows to skip in Excel files
         sample_rows: Number of rows to sample for type inference (None = read entire file)
 
@@ -2081,7 +2055,7 @@ def infer_schema_from_file(
         {
             "column_mapping": {"column_name": ([], "type_string"), ...},
             "null_values": ["NA", "None", ...] or None if no custom nulls detected,
-            "encoding": "utf-8" or "latin-1+ftfy"
+            "encoding": the encoding used
         }
     """
     path = Path(file_path)
@@ -2094,36 +2068,17 @@ def infer_schema_from_file(
     if filetype in ["csv", "tsv", "psv"]:
         import duckdb
 
-        # Handle encoding: decode to UTF-8 string
-        if encoding is None:
-            decoded = decode_file_content(file_path)
-            file_content = decoded["content"]
-            detected_encoding = decoded["encoding"]
-        else:
-            with open(file_path, "r", encoding=encoding) as f:
-                file_content = f.read()
-            detected_encoding = encoding
-
-        # If file needed ftfy fixing, save UTF-8 version to temp/encoding_fixed/ for reuse
-        # Otherwise just use the original file directly
-        if detected_encoding == "latin-1+ftfy":
-            fixed_dir = get_persistent_temp_dir() / "encoding_fixed"
-            fixed_dir.mkdir(exist_ok=True)
-            fixed_path = fixed_dir / (path.stem + "_fixed" + path.suffix)
-            fixed_path.write_text(file_content, encoding="utf-8")
-            sniff_path = str(fixed_path)
-        else:
-            sniff_path = file_path
+        encoding = encoding or "utf-8"
 
         conn = duckdb.connect()
 
         # Build sniff_csv options
         sample_size = sample_rows or -1
-        sniff_opts = f"sample_size={sample_size}, null_padding=true, strict_mode=false"
+        sniff_opts = f"sample_size={sample_size}, null_padding=true, strict_mode=false, encoding='{encoding}'"
         if not has_header:
             sniff_opts += ", header=false"
 
-        result = conn.execute(f"SELECT * FROM sniff_csv('{sniff_path}', {sniff_opts})").fetchone()
+        result = conn.execute(f"SELECT * FROM sniff_csv('{file_path}', {sniff_opts})").fetchone()
 
         # Schema is at index 7
         schema = result[7]
@@ -2144,7 +2099,7 @@ def infer_schema_from_file(
 
         conn.close()
 
-        return {"column_mapping": column_mapping, "null_values": None, "encoding": detected_encoding}
+        return {"column_mapping": column_mapping, "null_values": None, "encoding": encoding}
 
     elif filetype == "xlsx":
         # Excel files: use pandas (DuckDB xlsx support requires extension)
@@ -2238,6 +2193,13 @@ Note: Delimiter is auto-detected by DuckDB for CSV/TSV/PSV files.
         help="Number of rows to sample for type inference (default: read entire file)",
     )
 
+    parser.add_argument(
+        "--encoding",
+        type=str,
+        default=None,
+        help="File encoding (e.g., utf-8, latin-1, cp1252). Defaults to utf-8.",
+    )
+
     args = parser.parse_args()
 
     input_path = Path(args.path)
@@ -2278,6 +2240,7 @@ Note: Delimiter is auto-detected by DuckDB for CSV/TSV/PSV files.
                         file_path=str(file_path),
                         filetype=args.filetype,
                         has_header=not args.no_header,
+                        encoding=args.encoding,
                         excel_skiprows=args.excel_skiprows,
                         sample_rows=args.sample_rows,
                     )
@@ -2304,6 +2267,7 @@ Note: Delimiter is auto-detected by DuckDB for CSV/TSV/PSV files.
                 file_path=str(input_path),
                 filetype=args.filetype,
                 has_header=not args.no_header,
+                encoding=args.encoding,
                 excel_skiprows=args.excel_skiprows,
                 sample_rows=args.sample_rows,
             )

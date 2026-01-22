@@ -31,7 +31,7 @@ python table_functions.py data/earthquakes/  # All files in dir
 - `--excel-skiprows N` - Rows to skip in Excel files
 - `--sample-rows N` - Number of rows to sample for type inference (default: read entire file)
 
-**Note:** Delimiter and encoding are auto-detected by DuckDB. The framework tries UTF-8 first, then falls back to latin-1 + ftfy for files with non-UTF-8 bytes.
+**Note:** Delimiter is auto-detected by DuckDB. Encoding defaults to UTF-8 but can be specified explicitly with `--encoding`.
 
 ### Workflow
 
@@ -78,7 +78,7 @@ The CLI outputs JSON keyed by **original filename** with `table_name` (snake_cas
 - **Key**: Original filename (for matching in `column_mapping_fn`)
 - **table_name**: Snake_case version of filename stem (for `output_table_naming_fn`)
 - **column_mapping**: Column definitions with automatic snake_case conversion
-- **encoding**: How the file was decoded - either `"utf-8"` or `"latin-1+ftfy"` (for non-UTF-8 files)
+- **encoding**: The encoding used to read the file (defaults to `"utf-8"`)
 - **null_values**: (optional) List of detected null value representations in the data. Only included if custom null values are found. Common patterns detected: `NA`, `N/A`, `None`, `NULL`, `NaN`, `.`, `-`
 
 **Column Name Conversion:**
@@ -165,38 +165,19 @@ update_table(
 
 This maintains single source of truth for column names.
 
-### 2. Automatic Encoding Detection
+### 2. Encoding Handling
 
-The framework automatically handles file encodings using a robust two-step approach:
+Encoding defaults to UTF-8. For files with different encodings, specify explicitly:
 
-1. **Try UTF-8 first** - most modern files use UTF-8
-2. **Fall back to latin-1 + ftfy** - for files with non-UTF-8 bytes, decode as latin-1 (which accepts any byte) and use the `ftfy` library to fix encoding issues (mojibake)
-
-This handles:
-- Pure UTF-8 files
-- Windows CP-1252 files (smart quotes, accented characters)
-- Mixed encoding files (common when data comes from multiple sources)
-- Files with problematic bytes like `0x81` (undefined in CP-1252)
-
-**No encoding parameter needed** - encoding is always auto-detected.
-
-**Example files that work automatically:**
 ```python
-# All these work without specifying encoding:
-add_files_to_metadata_table(
-    conninfo="postgresql://user:pass@host/db",
-    schema="raw",
-    source_dir="data/mixed_encodings/",  # UTF-8, CP-1252, latin-1 - all handled
-    filetype="csv",
-)
-
 update_table(
     conninfo="postgresql://user:pass@host/db",
     schema="raw",
     output_table="my_table",
     filetype="csv",
-    source_dir="data/mixed_encodings/",
+    source_dir="data/my_files/",
     column_mapping=column_mapping,
+    encoding="latin-1",  # or "utf-8", "cp1252", etc.
 )
 ```
 
@@ -384,7 +365,6 @@ add_files_to_metadata_table(
     compression_type="zip",
     archive_glob="*.csv",
     has_header=False,  # Required for accurate row count validation
-    encoding="utf-8",
     resume=False,
     expected_archive_file_count=20,  # Optional: enables archive-level skip on resume
 )
@@ -483,6 +463,7 @@ Quick reference for `update_table()` optional parameters:
 | `retry_failed` | `bool` | Re-process failed files |
 | `cleanup` | `bool` | Delete cached files after successful ingestion |
 | `ephemeral_cache` | `bool` | Use temporary directory (auto-deleted) instead of persistent `temp/` |
+| `encoding` | `str` | File encoding (e.g., `"latin-1"`, `"cp1252"`). If None, auto-detects. |
 
 ## File Type Reference
 
