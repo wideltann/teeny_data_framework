@@ -4746,9 +4746,9 @@ class TestConnectionStringHandling:
                 status, error_message = result
                 assert status == "Failure", f"Expected Failure status, got {status}"
                 assert error_message is not None, "Error message should be logged"
-                assert (
-                    "Schema mismatch" in error_message
-                ), f"Expected schema mismatch error, got: {error_message}"
+                assert "Schema mismatch" in error_message, (
+                    f"Expected schema mismatch error, got: {error_message}"
+                )
 
         # Verify the other files were processed successfully
         with psycopg.connect(conninfo) as conn:
@@ -4762,9 +4762,9 @@ class TestConnectionStringHandling:
                     (str(csv_dir) + "/%",),
                 )
                 success_count = cur.fetchone()[0]
-                assert (
-                    success_count == 2
-                ), f"Expected 2 successful files, got {success_count}"
+                assert success_count == 2, (
+                    f"Expected 2 successful files, got {success_count}"
+                )
 
         # Verify data was loaded for successful files
         with psycopg.connect(conninfo) as conn:

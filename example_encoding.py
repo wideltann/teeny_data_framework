@@ -84,7 +84,7 @@ def _(source_dir):
     """
 
     file_path = source_dir / "restaurants.csv"
-    with open(file_path, 'w', encoding='cp1252') as f:
+    with open(file_path, "w", encoding="cp1252") as f:
         f.write(content)
 
     print(f"✓ Created CP-1252 encoded file: {file_path}")
@@ -123,7 +123,9 @@ def _(add_files_to_metadata_table, conninfo, source_dir):
 
 @app.cell
 def _(metadata_df, mo):
-    mo.ui.table(metadata_df[['source_path', 'header', 'row_count', 'metadata_ingest_status']])
+    mo.ui.table(
+        metadata_df[["source_path", "header", "row_count", "metadata_ingest_status"]]
+    )
     return
 
 
@@ -178,7 +180,7 @@ def _(conninfo, source_dir, update_table):
 
 @app.cell
 def _(ingest_df, mo):
-    mo.ui.table(ingest_df[['source_path', 'status', 'ingest_runtime']])
+    mo.ui.table(ingest_df[["source_path", "status", "ingest_runtime"]])
     return
 
 
@@ -200,7 +202,7 @@ def _(conn, mo):
         FROM test_encoding.restaurants
         ORDER BY "Price"
         """,
-        engine=conn
+        engine=conn,
     )
     return (result_df,)
 

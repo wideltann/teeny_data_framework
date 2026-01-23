@@ -115,7 +115,6 @@ def _(column_mapping, conninfo, source_dir, update_table):
         # Return column names in order from the mapping (excluding 'default')
         return [k for k in column_mapping.keys() if k != "default"]
 
-
     update_table(
         conninfo=conninfo,
         schema="raw",
@@ -128,8 +127,6 @@ def _(column_mapping, conninfo, source_dir, update_table):
         resume=True,
     )
     return
-
-
 
 
 @app.cell

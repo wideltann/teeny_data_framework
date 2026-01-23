@@ -131,7 +131,7 @@ def _(conn, mo):
         f"""
         SELECT * FROM raw.iris LIMIT 20
         """,
-        engine=conn
+        engine=conn,
     )
     return
 
