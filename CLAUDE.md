@@ -2,7 +2,7 @@
 
 ## Project Purpose
 
-Lightweight data ingestion framework for loading CSV/TSV/PSV files (including from ZIP archives) into PostgreSQL with metadata tracking and row count validation.
+Lightweight data ingestion framework for loading CSV/TSV/PSV/XML files (including from ZIP archives) into PostgreSQL with metadata tracking and row count validation.
 
 ## Schema Inference CLI
 
@@ -26,7 +26,7 @@ python table_functions.py data/earthquakes/  # All files in dir
 
 ### CLI Options
 
-- `--filetype {csv,tsv,psv,xlsx,parquet}` - File type (auto-detected from extension)
+- `--filetype {csv,tsv,psv,xlsx,parquet,xml}` - File type (auto-detected from extension)
 - `--no-header` - File has no header row (generates col_0, col_1, etc.)
 - `--excel-skiprows N` - Rows to skip in Excel files
 - `--sample-rows N` - Number of rows to sample for type inference (default: read entire file)
@@ -476,6 +476,7 @@ Quick reference for `update_table()` optional parameters:
 | Excel | `"xlsx"` | `True` | No | Requires openpyxl |
 | Parquet | `"parquet"` | N/A | No | Requires pyarrow |
 | Fixed-width | `"fixed_width"` | `False` | Special format | Different column_mapping format |
+| Shallow XML | `"xml"` | N/A | No | Root element with repeated child elements |
 
 ## Important Don'ts
 
