@@ -491,7 +491,11 @@ class TestColumnMapping:
         result = prepare_column_mapping(header, column_mapping)
 
         assert result.rename_dict == {}  # No renames needed
-        assert result.read_dtypes == {"col1": "string", "col2": "Int64", "col3": "float64"}
+        assert result.read_dtypes == {
+            "col1": "string",
+            "col2": "Int64",
+            "col3": "float64",
+        }
         assert result.missing_cols == {}
 
     def test_prepare_column_mapping_with_rename(self):

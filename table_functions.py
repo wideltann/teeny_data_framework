@@ -548,16 +548,20 @@ def read_xml(
                     if df[col].dtype == bool or df[col].dtype == "boolean":
                         df[col] = df[col].astype("boolean")
                     else:
-                        df[col] = df[col].map(
-                            {
-                                "true": True,
-                                "false": False,
-                                "1": True,
-                                "0": False,
-                                "True": True,
-                                "False": False,
-                            }
-                        ).astype("boolean")
+                        df[col] = (
+                            df[col]
+                            .map(
+                                {
+                                    "true": True,
+                                    "false": False,
+                                    "1": True,
+                                    "0": False,
+                                    "True": True,
+                                    "False": False,
+                                }
+                            )
+                            .astype("boolean")
+                        )
                 elif dtype == "datetime64[ns]":
                     df[col] = pd.to_datetime(df[col], errors="coerce")
                 elif dtype == "string":
@@ -1263,7 +1267,9 @@ def get_file_metadata_row(
         "file_hash": None,
         "metadata_ingest_datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "metadata_ingest_status": "Failure",
-        "error_message": normalize_error_message(error_message) if error_message else None,
+        "error_message": normalize_error_message(error_message)
+        if error_message
+        else None,
     }
 
     if error_message:
@@ -1664,7 +1670,9 @@ def _add_files_to_metadata_table_impl(
             """
         ).format(
             sql.Identifier(schema),
-            sql.SQL("AND metadata_ingest_status = 'Success'" if not retry_failed else ""),
+            sql.SQL(
+                "AND metadata_ingest_status = 'Success'" if not retry_failed else ""
+            ),
         )
 
         with psycopg.connect(conninfo) as conn:
@@ -1831,9 +1839,9 @@ def drop_metadata_by_source(
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                sql.SQL("SELECT COUNT(*) FROM {}.metadata WHERE source_dir LIKE %s").format(
-                    sql.Identifier(schema)
-                ),
+                sql.SQL(
+                    "SELECT COUNT(*) FROM {}.metadata WHERE source_dir LIKE %s"
+                ).format(sql.Identifier(schema)),
                 (source_dir,),
             )
             count_before = cur.fetchone()[0]
@@ -1852,9 +1860,9 @@ def drop_metadata_by_source(
 
         with conn.cursor() as cur:
             cur.execute(
-                sql.SQL("SELECT COUNT(*) FROM {}.metadata WHERE source_dir LIKE %s").format(
-                    sql.Identifier(schema)
-                ),
+                sql.SQL(
+                    "SELECT COUNT(*) FROM {}.metadata WHERE source_dir LIKE %s"
+                ).format(sql.Identifier(schema)),
                 (source_dir,),
             )
             count_after = cur.fetchone()[0]
