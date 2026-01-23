@@ -495,6 +495,77 @@ def read_csv(
     return _apply_column_transforms(df, rename_dict, missing_cols)
 
 
+def read_xml(
+    full_path: Optional[str] = None,
+    column_mapping: Optional[Dict[str, Tuple[List[str], str]]] = None,
+    encoding: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Read shallow XML file and return pandas DataFrame with proper column mapping.
+
+    Uses pd.read_xml for parsing. Pandas auto-discovers the row element and columns.
+
+    Shallow XML format: A root element containing repeated child elements where each
+    child element represents a row. Child elements can have attributes and/or text
+    content for each field.
+
+    Example formats supported:
+        <data>
+            <row id="1" name="Alice"><age>30</age></row>
+            <row id="2" name="Bob"><age>25</age></row>
+        </data>
+
+        <data>
+            <attributes d_dt_start="2009-04-15" id_rssd="37">
+                <bhc_ind>0</bhc_ind>
+                <city>SPARTA</city>
+            </attributes>
+        </data>
+
+    Args:
+        full_path: Path to XML file
+        column_mapping: Column mapping dictionary (same format as CSV)
+        encoding: File encoding. If None, reads from XML declaration or defaults to utf-8.
+
+    Returns:
+        DataFrame with columns from XML elements/attributes
+    """
+    # pd.read_xml auto-discovers row elements and columns
+    df = pd.read_xml(full_path, parser="etree", encoding=encoding)
+
+    if df.empty:
+        return pd.DataFrame()
+
+    # Get header from DataFrame columns
+    header = df.columns.tolist()
+
+    # Process column mapping
+    rename_dict, read_dtypes, missing_cols = prepare_column_mapping(
+        header, column_mapping
+    )
+
+    # Apply dtypes - XML text is all strings, so we need to convert
+    for col, dtype in read_dtypes.items():
+        if col in df.columns:
+            try:
+                if dtype == "Int64":
+                    df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+                elif dtype == "float64":
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                elif dtype == "boolean":
+                    df[col] = df[col].map(
+                        {"true": True, "false": False, "1": True, "0": False, "True": True, "False": False}
+                    ).astype("boolean")
+                elif dtype == "datetime64[ns]":
+                    df[col] = pd.to_datetime(df[col], errors="coerce")
+                elif dtype == "string":
+                    df[col] = df[col].astype("string")
+            except Exception:
+                df[col] = df[col].astype("string")
+
+    return _apply_column_transforms(df, rename_dict, missing_cols)
+
+
 def read_fixed_width(
     full_path: Optional[str] = None,
     column_mapping: Optional[Dict[str, Tuple[str, int, int]]] = None,
@@ -606,10 +677,16 @@ def read_using_column_mapping(
                 column_mapping=column_mapping,
                 encoding=encoding,
             )
+        case "xml":
+            return read_xml(
+                full_path=full_path,
+                column_mapping=column_mapping,
+                encoding=encoding,
+            )
         case _:
             raise ValueError(
                 f"Invalid filetype: {filetype}. "
-                f"Must be one of: csv, tsv, psv, xlsx, parquet, fixed_width"
+                f"Must be one of: csv, tsv, psv, xlsx, parquet, fixed_width, xml"
             )
 
 
@@ -2068,52 +2145,42 @@ def infer_schema_from_file(
     # Auto-detect filetype from extension if not provided
     if not filetype:
         ext = path.suffix.lower().lstrip(".")
-        filetype = ext if ext in ["csv", "tsv", "psv", "xlsx", "parquet"] else "csv"
+        filetype = ext if ext in ["csv", "tsv", "psv", "xlsx", "parquet", "xml"] else "csv"
 
     if filetype in ["csv", "tsv", "psv"]:
         encoding = encoding or "utf-8"
 
-        sep = None
+        # Set separator based on filetype
         if filetype == "tsv":
             sep = "\t"
         elif filetype == "psv":
             sep = "|"
         else:
-            # Attempt to sniff delimiter for CSV
-            try:
-                import csv
-
-                with open(file_path, "r", encoding=encoding, errors="replace") as f:
-                    # Read a sample
-                    sample = f.read(4096)
-                    if sample.startswith("\ufeff"):
-                        sample = sample[1:]
-
-                    if sample:
-                        sniffer = csv.Sniffer()
-                        # prefer commonly used delimiters
-                        dialect = sniffer.sniff(
-                            sample, delimiters=[",", ";", "\t", "|"]
-                        )
-                        sep = dialect.delimiter
-            except Exception:
-                # Fallback to default comma if sniffing fails
-                pass
-
-        # Default to comma if still None (e.g. sniffing failed or filetype=csv with no sniffed sep)
-        if sep is None:
-            sep = ","
+            # Use sep=None with python engine for auto-detection
+            sep = None
 
         try:
             df = pd.read_csv(
                 file_path,
                 sep=sep,
+                engine="python" if sep is None else None,
                 encoding=encoding,
                 header=0 if has_header else None,
                 nrows=sample_rows,
                 on_bad_lines="skip",
-                low_memory=False,
             )
+            # Handle pandas bug with single-column files where sep=None picks wrong delimiter
+            # If sep=None produced 'Unnamed' columns, it likely picked a wrong delimiter - retry with comma
+            if sep is None and any("Unnamed" in str(c) for c in df.columns):
+                df = pd.read_csv(
+                    file_path,
+                    sep=",",
+                    encoding=encoding,
+                    header=0 if has_header else None,
+                    nrows=sample_rows,
+                    on_bad_lines="skip",
+                    low_memory=False,
+                )
         except pd.errors.EmptyDataError:
             # Handle empty file
             return {"column_mapping": {}, "null_values": None, "encoding": encoding}
@@ -2184,6 +2251,40 @@ def infer_schema_from_file(
 
         return {"column_mapping": column_mapping, "null_values": None, "encoding": None}
 
+    elif filetype == "xml":
+        # pd.read_xml auto-discovers row elements and columns
+        df = pd.read_xml(file_path, parser="etree")
+
+        if sample_rows and len(df) > sample_rows:
+            df = df.head(sample_rows)
+
+        if df.empty:
+            return {"column_mapping": {}, "null_values": None, "encoding": None}
+
+        # Try to infer types by attempting numeric conversion
+        for col in df.columns:
+            try:
+                numeric_vals = pd.to_numeric(df[col], errors="coerce")
+                if numeric_vals.notna().any():
+                    if (numeric_vals.dropna() == numeric_vals.dropna().astype(int)).all():
+                        df[col] = numeric_vals.astype("Int64")
+                    else:
+                        df[col] = numeric_vals
+            except Exception:
+                pass
+
+        column_mapping = {}
+        for col in df.columns:
+            type_string = _infer_column_mapping_type(df[col].dtype)
+            original_col = str(col)
+            snake_case_col = to_snake_case(original_col)
+            if snake_case_col == original_col:
+                column_mapping[snake_case_col] = ([], type_string)
+            else:
+                column_mapping[snake_case_col] = ([original_col], type_string)
+
+        return {"column_mapping": column_mapping, "null_values": None, "encoding": None}
+
     else:
         raise ValueError(f"Unsupported filetype: {filetype}")
 
@@ -2214,7 +2315,7 @@ Note: Delimiter is auto-detected for CSV/TSV/PSV files.
 
     parser.add_argument(
         "--filetype",
-        choices=["csv", "tsv", "psv", "xlsx", "parquet"],
+        choices=["csv", "tsv", "psv", "xlsx", "parquet", "xml"],
         help="File type (auto-detected from extension if not provided)",
     )
 
@@ -2261,7 +2362,7 @@ Note: Delimiter is auto-detected for CSV/TSV/PSV files.
             if args.filetype:
                 extensions = [f".{args.filetype}"]
             else:
-                extensions = [".csv", ".tsv", ".psv", ".xlsx", ".parquet"]
+                extensions = [".csv", ".tsv", ".psv", ".xlsx", ".parquet", ".xml"]
 
             # Find all matching files in directory (non-recursive)
             files = sorted(
