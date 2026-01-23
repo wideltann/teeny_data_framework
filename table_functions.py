@@ -1181,10 +1181,6 @@ def _update_table_impl(
         except Exception as e:
             error_str = str(e)
 
-            # Schema mismatches should fail hard - user needs to fix the table or column_mapping
-            if "Schema mismatch" in error_str:
-                raise
-
             # Fresh connection for error metadata update
             with psycopg.connect(conninfo) as conn:
                 update_metadata(
