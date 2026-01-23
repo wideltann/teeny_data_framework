@@ -5,7 +5,14 @@ set -e  # Exit immediately on any error
 
 echo "🎨 Formatting code with ruff..."
 uv run ruff format .
-echo ""
+
+# If ruff made changes, stage them and amend the commit
+if ! git diff --quiet; then
+    echo "📝 Staging formatting changes..."
+    git add -u
+    git commit --amend --no-edit
+    echo ""
+fi
 
 echo "🧪 Running tests before push..."
 echo ""
