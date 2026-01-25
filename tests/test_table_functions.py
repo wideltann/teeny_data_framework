@@ -39,7 +39,6 @@ from table_functions import (
     # Cache path utilities
     get_persistent_temp_dir,
     get_cache_path_from_s3,
-    get_archive_cache_path_from_s3,
     get_cache_path_from_source_path,
     set_temp_dir_override,
     # Column mapping
@@ -379,12 +378,12 @@ class TestCachePaths:
         finally:
             set_temp_dir_override(None)
 
-    def test_get_archive_cache_path_from_s3(self, temp_dir):
+    def test_get_cache_path_from_s3_archive(self, temp_dir):
         """Test S3 archive path goes to archives subdirectory"""
         set_temp_dir_override(temp_dir)
         try:
-            cache_path = get_archive_cache_path_from_s3(
-                "s3://my-bucket/data/archive.zip"
+            cache_path = get_cache_path_from_s3(
+                "s3://my-bucket/data/archive.zip", is_archive=True
             )
             assert (
                 cache_path
@@ -444,7 +443,7 @@ class TestCachePaths:
         set_temp_dir_override(temp_dir)
         try:
             # Where the downloaded archive goes
-            archive_cache = get_archive_cache_path_from_s3("s3://bucket/data.zip")
+            archive_cache = get_cache_path_from_s3("s3://bucket/data.zip", is_archive=True)
             # Where extracted contents go
             extracted_cache = get_cache_path_from_source_path(
                 "s3://bucket/data.zip::inner/file.csv"
@@ -1003,7 +1002,7 @@ class TestDatabaseOperations:
             }
         )
 
-        with pytest.raises(ValueError, match="DataFrame has columns not in table"):
+        with pytest.raises(ValueError, match="DataFrame has extra"):
             validate_schema_match(db_conn, df, "test_schema", "validate_test2")
 
     def test_copy_dataframe_to_table(self, db_conn):

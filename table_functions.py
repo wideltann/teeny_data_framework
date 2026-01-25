@@ -15,11 +15,6 @@ import psycopg
 from psycopg import sql
 
 
-# =============================================================================
-# Type System - Single source of truth for type mappings
-# =============================================================================
-
-
 @dataclass
 class TypeMapping:
     """Mapping between simplified type strings and pandas/postgres types"""
@@ -63,22 +58,8 @@ def dtype_str_to_postgres(dtype_str: str) -> str:
     return "TEXT"
 
 
-def pandas_dtype_to_postgres(dtype: Any) -> str:
-    """Infer PostgreSQL type from pandas dtype."""
-    dtype_str = str(dtype).lower()
-    if "int" in dtype_str:
-        return "BIGINT"
-    elif "float" in dtype_str or "decimal" in dtype_str:
-        return "DOUBLE PRECISION"
-    elif "bool" in dtype_str:
-        return "BOOLEAN"
-    elif "datetime" in dtype_str or "date" in dtype_str or "time" in dtype_str:
-        return "TIMESTAMP"
-    return "TEXT"
-
-
-def pandas_dtype_to_type_str(dtype: Any) -> str:
-    """Infer column_mapping type string from pandas dtype."""
+def _infer_type_from_pandas_dtype(dtype: Any) -> str:
+    """Infer simplified type string from pandas dtype."""
     dtype_str = str(dtype).lower()
     if "int" in dtype_str:
         return "int"
@@ -91,9 +72,14 @@ def pandas_dtype_to_type_str(dtype: Any) -> str:
     return "string"
 
 
-# =============================================================================
-# Column Mapping Result - Structured return type
-# =============================================================================
+def pandas_dtype_to_postgres(dtype: Any) -> str:
+    """Infer PostgreSQL type from pandas dtype."""
+    return TYPE_SYSTEM[_infer_type_from_pandas_dtype(dtype)].postgres
+
+
+def pandas_dtype_to_type_str(dtype: Any) -> str:
+    """Infer column_mapping type string from pandas dtype."""
+    return _infer_type_from_pandas_dtype(dtype)
 
 
 @dataclass
@@ -177,22 +163,12 @@ def apply_column_transforms(
     return df
 
 
-# =============================================================================
-# Error Handling - Centralized error normalization
-# =============================================================================
-
-
 def normalize_error_message(error: str, max_length: int = 500) -> str:
     """Normalize error message for storage in metadata."""
     if len(error) > max_length:
         error = error[:max_length] + "... [truncated]"
     # Remove characters that could break SQL strings
     return error.replace("'", "").replace("`", "")
-
-
-# =============================================================================
-# Temp Directory Context Manager
-# =============================================================================
 
 
 class TempDirContext:
@@ -244,11 +220,6 @@ def get_persistent_temp_dir() -> Path:
 def set_temp_dir_override(path: Optional[Path]) -> None:
     """Set the temp directory override (for backward compatibility)."""
     TempDirContext._current = path
-
-
-# =============================================================================
-# S3 Helper Functions
-# =============================================================================
 
 
 def is_s3_path(path: str) -> bool:
@@ -317,18 +288,11 @@ def get_s3_filesystem(filesystem: Optional[Any] = None) -> Any:
     return s3fs.S3FileSystem()
 
 
-def get_cache_path_from_s3(s3_path: str) -> Path:
+def get_cache_path_from_s3(s3_path: str, is_archive: bool = False) -> Path:
     """Convert S3 path to local cache path that mirrors the S3 structure."""
     path_without_prefix = s3_path.replace("s3://", "")
-    cache_path = get_persistent_temp_dir() / path_without_prefix
-    cache_path.parent.mkdir(exist_ok=True, parents=True)
-    return cache_path
-
-
-def get_archive_cache_path_from_s3(s3_path: str) -> Path:
-    """Convert S3 archive path to local cache path in the archives subdirectory."""
-    path_without_prefix = s3_path.replace("s3://", "")
-    cache_path = get_persistent_temp_dir() / "archives" / path_without_prefix
+    base = get_persistent_temp_dir() / "archives" if is_archive else get_persistent_temp_dir()
+    cache_path = base / path_without_prefix
     cache_path.parent.mkdir(exist_ok=True, parents=True)
     return cache_path
 
@@ -357,10 +321,7 @@ def download_s3_file_with_cache(
     s3_path: str, filesystem: Any, is_archive: bool = False
 ) -> Path:
     """Download S3 file to persistent cache, reusing cached file if it exists with matching size."""
-    if is_archive:
-        cache_path = get_archive_cache_path_from_s3(s3_path)
-    else:
-        cache_path = get_cache_path_from_s3(s3_path)
+    cache_path = get_cache_path_from_s3(s3_path, is_archive=is_archive)
 
     s3_info = filesystem.info(s3_path)
     s3_size = s3_info["size"]
@@ -375,11 +336,6 @@ def download_s3_file_with_cache(
     filesystem.get(s3_path, str(cache_path))
 
     return cache_path
-
-
-# =============================================================================
-# File Type Registry - Single source of truth for file type handling
-# =============================================================================
 
 
 @dataclass
@@ -409,11 +365,6 @@ def get_filetype_config(filetype: str) -> FileTypeConfig:
             f"Must be one of: {', '.join(FILETYPE_REGISTRY.keys())}"
         )
     return FILETYPE_REGISTRY[filetype]
-
-
-# =============================================================================
-# File Readers
-# =============================================================================
 
 
 def read_delimited(
@@ -488,7 +439,6 @@ def read_xlsx(
     full_path: str,
     column_mapping: Dict[str, Tuple[List[str], str]],
     excel_skiprows: int = 0,
-    **kwargs,
 ) -> pd.DataFrame:
     """Read Excel file and return DataFrame with column mapping."""
     header = pd.read_excel(full_path, skiprows=excel_skiprows, nrows=1).columns.tolist()
@@ -502,7 +452,6 @@ def read_xlsx(
 def read_parquet(
     full_path: str,
     column_mapping: Dict[str, Tuple[List[str], str]],
-    **kwargs,
 ) -> pd.DataFrame:
     """Read parquet file and return DataFrame with column mapping."""
     df = pd.read_parquet(full_path)
@@ -524,7 +473,6 @@ def read_xml(
     full_path: str,
     column_mapping: Dict[str, Tuple[List[str], str]],
     encoding: Optional[str] = None,
-    **kwargs,
 ) -> pd.DataFrame:
     """Read shallow XML file and return DataFrame with column mapping."""
     df = pd.read_xml(full_path, parser="etree", encoding=encoding)
@@ -576,7 +524,6 @@ def read_fixed_width(
     full_path: str,
     column_mapping: Dict[str, Tuple[str, int, int]],
     encoding: Optional[str] = None,
-    **kwargs,
 ) -> pd.DataFrame:
     """
     Read fixed-width file and return DataFrame.
@@ -623,44 +570,20 @@ def read_using_column_mapping(
 ) -> pd.DataFrame:
     """Router function to read different file types with column mapping."""
     config = get_filetype_config(filetype)
+    key = config.reader_key
 
-    if config.reader_key == "delimited":
-        return read_delimited(
-            full_path=full_path,
-            column_mapping=column_mapping,
-            has_header=has_header,
-            header=header,
-            separator=config.separator,
-            null_values=null_values,
-            encoding=encoding,
-        )
-    elif config.reader_key == "xlsx":
-        return read_xlsx(
-            full_path=full_path,
-            column_mapping=column_mapping,
-            excel_skiprows=excel_skiprows,
-        )
-    elif config.reader_key == "parquet":
-        return read_parquet(full_path=full_path, column_mapping=column_mapping)
-    elif config.reader_key == "fixed_width":
-        return read_fixed_width(
-            full_path=full_path,
-            column_mapping=column_mapping,
-            encoding=encoding,
-        )
-    elif config.reader_key == "xml":
-        return read_xml(
-            full_path=full_path,
-            column_mapping=column_mapping,
-            encoding=encoding,
-        )
-    else:
-        raise ValueError(f"Unknown reader_key: {config.reader_key}")
-
-
-# =============================================================================
-# Database Operations
-# =============================================================================
+    if key == "delimited":
+        return read_delimited(full_path, column_mapping, header, has_header,
+                              null_values, config.separator, encoding)
+    elif key == "xlsx":
+        return read_xlsx(full_path, column_mapping, excel_skiprows)
+    elif key == "parquet":
+        return read_parquet(full_path, column_mapping)
+    elif key == "fixed_width":
+        return read_fixed_width(full_path, column_mapping, encoding)
+    elif key == "xml":
+        return read_xml(full_path, column_mapping, encoding)
+    raise ValueError(f"Unknown reader_key: {key}")
 
 
 def table_exists(conn: psycopg.Connection, schema: str, table: str) -> bool:
@@ -704,46 +627,26 @@ def validate_schema_match(
         return
 
     existing_schema = get_table_schema(conn, schema, table)
-    df_columns = set(df.columns)
-    table_columns = set(existing_schema.keys())
+    df_cols, table_cols = set(df.columns), set(existing_schema.keys())
 
-    missing_in_table = df_columns - table_columns
-    if missing_in_table:
+    if df_cols != table_cols:
+        missing_in_table, missing_in_df = df_cols - table_cols, table_cols - df_cols
         raise ValueError(
             f"Schema mismatch for {schema}.{table}: "
-            f"DataFrame has columns not in table: {sorted(missing_in_table)}\n"
-            f"Table columns: {sorted(table_columns)}\n"
-            f"DataFrame columns: {sorted(df_columns)}"
+            f"{'DataFrame has extra: ' + str(sorted(missing_in_table)) if missing_in_table else ''}"
+            f"{', ' if missing_in_table and missing_in_df else ''}"
+            f"{'Table has extra: ' + str(sorted(missing_in_df)) if missing_in_df else ''}"
         )
 
-    missing_in_df = table_columns - df_columns
-    if missing_in_df:
-        raise ValueError(
-            f"Schema mismatch for {schema}.{table}: "
-            f"Table has columns not in DataFrame: {sorted(missing_in_df)}\n"
-            f"Table columns: {sorted(table_columns)}\n"
-            f"DataFrame columns: {sorted(df_columns)}"
+    type_mismatches = [
+        f"  {col}: expected {pandas_dtype_to_postgres(df[col].dtype)}, got {existing_schema[col].upper()}"
+        for col in df.columns
+        if existing_schema[col].lower() not in POSTGRES_TYPE_VARIANTS.get(
+            pandas_dtype_to_postgres(df[col].dtype), [pandas_dtype_to_postgres(df[col].dtype).lower()]
         )
-
-    # Validate column types match
-    type_mismatches = []
-    for col in df.columns:
-        expected_pg_type = pandas_dtype_to_postgres(df[col].dtype)
-        actual_pg_type = existing_schema[col]
-
-        expected_variants = POSTGRES_TYPE_VARIANTS.get(
-            expected_pg_type, [expected_pg_type.lower()]
-        )
-        if actual_pg_type.lower() not in expected_variants:
-            type_mismatches.append(
-                f"  {col}: expected {expected_pg_type}, got {actual_pg_type.upper()}"
-            )
-
+    ]
     if type_mismatches:
-        raise ValueError(
-            f"Schema mismatch for {schema}.{table}:\n"
-            f"Column type mismatches:\n" + "\n".join(type_mismatches)
-        )
+        raise ValueError(f"Schema mismatch for {schema}.{table}:\nColumn type mismatches:\n" + "\n".join(type_mismatches))
 
 
 def create_table_from_dataframe(
@@ -860,11 +763,6 @@ def update_metadata(
         )
 
 
-# =============================================================================
-# Main Ingestion Functions
-# =============================================================================
-
-
 def update_table(
     conninfo: str,
     schema: str,
@@ -925,288 +823,145 @@ def update_table(
     Returns:
         DataFrame with metadata results
     """
-    with TempDirContext(ephemeral=ephemeral_cache):
-        return _update_table_impl(
-            conninfo=conninfo,
-            resume=resume,
-            retry_failed=retry_failed,
-            sample=sample,
-            schema=schema,
-            metadata_schema=metadata_schema,
-            output_table=output_table,
-            output_table_naming_fn=output_table_naming_fn,
-            additional_cols_fn=additional_cols_fn,
-            file_list_filter_fn=file_list_filter_fn,
-            custom_read_fn=custom_read_fn,
-            transform_fn=transform_fn,
-            source_dir=source_dir,
-            sql_glob=sql_glob,
-            filetype=filetype,
-            column_mapping=column_mapping,
-            column_mapping_fn=column_mapping_fn,
-            pivot_mapping=pivot_mapping,
-            encoding=encoding,
-            header_fn=header_fn,
-            null_values=null_values,
-            excel_skiprows=excel_skiprows,
-            cleanup=cleanup,
-        )
-
-
-def _update_table_impl(
-    conninfo: str,
-    schema: str,
-    source_dir: str,
-    filetype: str,
-    column_mapping: Optional[Dict[str, Tuple[List[str], str]]] = None,
-    column_mapping_fn: Optional[
-        Callable[[Path], Dict[str, Tuple[List[str], str]]]
-    ] = None,
-    output_table: Optional[str] = None,
-    output_table_naming_fn: Optional[Callable[[Path], str]] = None,
-    resume: bool = False,
-    retry_failed: bool = False,
-    sample: Optional[int] = None,
-    metadata_schema: Optional[str] = None,
-    additional_cols_fn: Optional[Callable[[Path], Dict[str, Any]]] = None,
-    file_list_filter_fn: Optional[Callable[[List[Path]], List[Path]]] = None,
-    custom_read_fn: Optional[Callable[[str], pd.DataFrame]] = None,
-    transform_fn: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
-    sql_glob: Optional[str] = None,
-    pivot_mapping: Optional[Dict[str, Any]] = None,
-    header_fn: Optional[Callable[[Path], List[str]]] = None,
-    null_values: Optional[List[str]] = None,
-    excel_skiprows: int = 0,
-    cleanup: bool = False,
-    encoding: Optional[str] = None,
-) -> pd.DataFrame:
-    """Internal implementation of update_table"""
     import time
 
-    # Validate mutually exclusive parameters
-    if column_mapping is not None and column_mapping_fn is not None:
-        raise ValueError("Cannot specify both column_mapping and column_mapping_fn")
-    if output_table is not None and output_table_naming_fn is not None:
-        raise ValueError("Cannot specify both output_table and output_table_naming_fn")
+    with TempDirContext(ephemeral=ephemeral_cache):
+        # Validate mutually exclusive parameters
+        if column_mapping is not None and column_mapping_fn is not None:
+            raise ValueError("Cannot specify both column_mapping and column_mapping_fn")
+        if output_table is not None and output_table_naming_fn is not None:
+            raise ValueError("Cannot specify both output_table and output_table_naming_fn")
+        if not custom_read_fn and not column_mapping_fn and column_mapping is None:
+            raise ValueError(
+                "column_mapping is required unless using custom_read_fn or column_mapping_fn"
+            )
 
-    if not custom_read_fn and not column_mapping_fn and column_mapping is None:
-        raise ValueError(
-            "column_mapping is required unless using custom_read_fn or column_mapping_fn"
-        )
+        source_dir = normalize_path(source_dir) + "/"
+        metadata_schema = metadata_schema or schema
+        glob_pattern = sql_glob if sql_glob else "%"
 
-    source_dir = normalize_path(source_dir) + "/"
-    metadata_schema = metadata_schema or schema
-    glob_pattern = sql_glob if sql_glob else "%"
-
-    # Query metadata for files to process
-    query = sql.SQL(
-        """
-        SELECT source_path
-        FROM {}.metadata
-        WHERE
-            source_dir LIKE %s AND
-            source_path LIKE %s AND
-            metadata_ingest_status = 'Success'
-        """
-    ).format(sql.Identifier(metadata_schema))
-
-    with psycopg.connect(conninfo) as conn:
-        with conn.cursor() as cur:
-            cur.execute(query, (source_dir, glob_pattern))
-            rows = cur.fetchall()
-    file_list = sorted([row[0] for row in rows])
-
-    if file_list_filter_fn:
-        file_list = file_list_filter_fn(file_list)
-
-    if resume:
-        resume_query = sql.SQL(
+        query = sql.SQL(
             """
-            SELECT source_path
-            FROM {}.metadata
-            WHERE
-                source_dir LIKE %s AND
-                ingest_datetime IS NOT NULL
-                {}
+            SELECT source_path FROM {}.metadata
+            WHERE source_dir LIKE %s AND source_path LIKE %s AND metadata_ingest_status = 'Success'
             """
-        ).format(
-            sql.Identifier(metadata_schema),
-            sql.SQL("AND status = 'Success'" if not retry_failed else ""),
-        )
+        ).format(sql.Identifier(metadata_schema))
 
         with psycopg.connect(conninfo) as conn:
             with conn.cursor() as cur:
-                cur.execute(resume_query, (source_dir,))
-                rows = cur.fetchall()
-        processed_set = set(row[0] for row in rows)
-        file_list = [f for f in file_list if f not in processed_set]
+                cur.execute(query, (source_dir, glob_pattern))
+                file_list = sorted([row[0] for row in cur.fetchall()])
 
-    total_files_to_be_processed = sample if sample else len(file_list)
+        if file_list_filter_fn:
+            file_list = file_list_filter_fn(file_list)
 
-    if total_files_to_be_processed == 0:
-        print("No files to ingest")
-    else:
-        print(
-            f"Output {'table' if output_table else 'schema'}: {output_table or schema} | "
-            f"Num files being processed: {total_files_to_be_processed} out of {len(file_list)} "
-            f"{'new files' if resume else 'total files'}"
-        )
-
-    for i, source_path in enumerate(file_list):
-        start_time = time.time()
-
-        if sample and i == sample:
-            break
-
-        cache_path = get_cache_path_from_source_path(source_path)
-
-        header = None
-        has_header = True
-        if header_fn:
-            header = header_fn(Path(cache_path))
-            has_header = False
-
-        unpivot_row_multiplier = None
-        table_name = (
-            output_table_naming_fn(Path(cache_path))
-            if output_table_naming_fn
-            else output_table
-        )
-
-        try:
-            if custom_read_fn:
-                df = custom_read_fn(full_path=str(cache_path))
-            else:
-                column_mapping_use = (
-                    column_mapping_fn(Path(cache_path))
-                    if column_mapping_fn
-                    else column_mapping
-                )
-
-                df = read_using_column_mapping(
-                    full_path=str(cache_path),
-                    filetype=filetype,
-                    column_mapping=column_mapping_use,
-                    header=header,
-                    has_header=has_header,
-                    null_values=null_values,
-                    excel_skiprows=excel_skiprows,
-                    encoding=encoding,
-                )
-
-            if pivot_mapping:
-                id_vars = pivot_mapping["id_vars"]
-                value_vars = [col for col in df.columns if col not in id_vars]
-                unpivot_row_multiplier = len(value_vars)
-
-                df = df.melt(
-                    id_vars=id_vars,
-                    value_vars=value_vars,
-                    var_name=pivot_mapping["variable_column_name"],
-                    value_name=pivot_mapping["value_column_name"],
-                )
-
-            # Fresh connection for row count check (resilience for long loops)
+        if resume:
+            resume_query = sql.SQL(
+                """
+                SELECT source_path FROM {}.metadata
+                WHERE source_dir LIKE %s AND ingest_datetime IS NOT NULL {}
+                """
+            ).format(
+                sql.Identifier(metadata_schema),
+                sql.SQL("AND status = 'Success'" if not retry_failed else ""),
+            )
             with psycopg.connect(conninfo) as conn:
-                row_count_check(
-                    conn=conn,
-                    schema=metadata_schema,
-                    df=df,
-                    source_path=source_path,
-                    unpivot_row_multiplier=unpivot_row_multiplier,
-                )
+                with conn.cursor() as cur:
+                    cur.execute(resume_query, (source_dir,))
+                    processed_set = {row[0] for row in cur.fetchall()}
+            file_list = [f for f in file_list if f not in processed_set]
 
-            if transform_fn:
-                df = transform_fn(df=df)
-
-            if additional_cols_fn:
-                additional_cols_dict = additional_cols_fn(Path(cache_path))
-                for col_name, col_value in additional_cols_dict.items():
-                    df[col_name] = col_value
-
-            df["source_path"] = source_path
-
-            # Fresh connection for write operations (resilience for long loops)
-            with psycopg.connect(conninfo) as conn:
-                if table_exists(conn, schema, table_name):
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            sql.SQL("DELETE FROM {}.{} WHERE source_path = %s").format(
-                                sql.Identifier(schema), sql.Identifier(table_name)
-                            ),
-                            (source_path,),
-                        )
-
-                copy_dataframe_to_table(conn, df, schema, table_name)
-                conn.commit()
-
-            ingest_runtime = int(time.time() - start_time)
-
-            # Fresh connection for metadata update (resilience for long loops)
-            with psycopg.connect(conninfo) as conn:
-                update_metadata(
-                    conn=conn,
-                    source_path=source_path,
-                    schema=metadata_schema,
-                    unpivot_row_multiplier=unpivot_row_multiplier,
-                    ingest_runtime=ingest_runtime,
-                    output_table=f"{schema}.{table_name}",
-                )
-                conn.commit()
-
-            # Cleanup cached file if requested
-            if cleanup and is_s3_path(source_path.split("::")[0]):
-                try:
-                    cache_path.unlink()
-                except Exception:
-                    pass
-
+        total = sample if sample else len(file_list)
+        if total == 0:
+            print("No files to ingest")
+        else:
             print(
-                f"{i + 1}/{total_files_to_be_processed} Ingested {source_path} -> "
-                f"{schema}.{table_name} ({len(df)} rows)"
+                f"Output {'table' if output_table else 'schema'}: {output_table or schema} | "
+                f"Num files being processed: {total} out of {len(file_list)} "
+                f"{'new files' if resume else 'total files'}"
             )
 
-        except Exception as e:
-            error_str = str(e)
+        for i, source_path in enumerate(file_list):
+            if sample and i == sample:
+                break
+            start_time = time.time()
+            cache_path = get_cache_path_from_source_path(source_path)
+            header, has_header = (header_fn(Path(cache_path)), False) if header_fn else (None, True)
+            unpivot_row_multiplier = None
+            table_name = output_table_naming_fn(Path(cache_path)) if output_table_naming_fn else output_table
 
-            # Fresh connection for error metadata update (resilience for long loops)
-            with psycopg.connect(conninfo) as conn:
-                update_metadata(
-                    conn=conn,
-                    source_path=source_path,
-                    schema=metadata_schema,
-                    error_message=error_str,
-                    unpivot_row_multiplier=unpivot_row_multiplier,
-                    output_table=f"{schema}.{table_name}" if table_name else None,
-                )
-                conn.commit()
+            try:
+                if custom_read_fn:
+                    df = custom_read_fn(full_path=str(cache_path))
+                else:
+                    cm = column_mapping_fn(Path(cache_path)) if column_mapping_fn else column_mapping
+                    df = read_using_column_mapping(
+                        str(cache_path), filetype, cm, header, has_header,
+                        null_values, excel_skiprows, encoding,
+                    )
 
-            print(
-                f"Failed on {source_path} with {normalize_error_message(error_str, 200)}",
-                file=sys.stderr,
-            )
+                if pivot_mapping:
+                    id_vars = pivot_mapping["id_vars"]
+                    value_vars = [col for col in df.columns if col not in id_vars]
+                    unpivot_row_multiplier = len(value_vars)
+                    df = df.melt(
+                        id_vars=id_vars, value_vars=value_vars,
+                        var_name=pivot_mapping["variable_column_name"],
+                        value_name=pivot_mapping["value_column_name"],
+                    )
 
-    # Return metadata results
-    result_query = sql.SQL(
-        """
-        SELECT *
-        FROM {}.metadata
-        WHERE source_dir LIKE %s AND source_path LIKE %s
-        ORDER BY ingest_datetime DESC
-        """
-    ).format(sql.Identifier(metadata_schema))
+                with psycopg.connect(conninfo) as conn:
+                    row_count_check(conn, metadata_schema, df, source_path, unpivot_row_multiplier)
 
-    with psycopg.connect(conninfo) as conn:
-        with conn.cursor() as cur:
-            cur.execute(result_query, (source_dir, glob_pattern))
-            columns = [desc[0] for desc in cur.description]
-            rows = cur.fetchall()
-            return pd.DataFrame(rows, columns=columns)
+                if transform_fn:
+                    df = transform_fn(df=df)
+                if additional_cols_fn:
+                    for col_name, col_value in additional_cols_fn(Path(cache_path)).items():
+                        df[col_name] = col_value
+                df["source_path"] = source_path
 
+                with psycopg.connect(conninfo) as conn:
+                    if table_exists(conn, schema, table_name):
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                sql.SQL("DELETE FROM {}.{} WHERE source_path = %s").format(
+                                    sql.Identifier(schema), sql.Identifier(table_name)
+                                ),
+                                (source_path,),
+                            )
+                    copy_dataframe_to_table(conn, df, schema, table_name)
+                    conn.commit()
 
-# =============================================================================
-# Metadata Functions
-# =============================================================================
+                ingest_runtime = int(time.time() - start_time)
+                with psycopg.connect(conninfo) as conn:
+                    update_metadata(conn, source_path, metadata_schema,
+                                    unpivot_row_multiplier=unpivot_row_multiplier,
+                                    ingest_runtime=ingest_runtime, output_table=f"{schema}.{table_name}")
+                    conn.commit()
+
+                if cleanup and is_s3_path(source_path.split("::")[0]):
+                    try:
+                        cache_path.unlink()
+                    except Exception:
+                        pass
+
+                print(f"{i + 1}/{total} Ingested {source_path} -> {schema}.{table_name} ({len(df)} rows)")
+
+            except Exception as e:
+                with psycopg.connect(conninfo) as conn:
+                    update_metadata(conn, source_path, metadata_schema, error_message=str(e),
+                                    unpivot_row_multiplier=unpivot_row_multiplier,
+                                    output_table=f"{schema}.{table_name}" if table_name else None)
+                    conn.commit()
+                print(f"Failed on {source_path} with {normalize_error_message(str(e), 200)}", file=sys.stderr)
+
+        result_query = sql.SQL(
+            "SELECT * FROM {}.metadata WHERE source_dir LIKE %s AND source_path LIKE %s ORDER BY ingest_datetime DESC"
+        ).format(sql.Identifier(metadata_schema))
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                cur.execute(result_query, (source_dir, glob_pattern))
+                return pd.DataFrame(cur.fetchall(), columns=[desc[0] for desc in cur.description])
 
 
 def get_csv_header_and_row_count(
@@ -1555,341 +1310,151 @@ def add_files_to_metadata_table(
         DataFrame with metadata results
     """
     with TempDirContext(ephemeral=ephemeral_cache):
-        return _add_files_to_metadata_table_impl(
-            conninfo=conninfo,
-            schema=schema,
-            source_dir=source_dir,
-            filetype=filetype,
-            glob=glob,
-            compression_type=compression_type,
-            archive_glob=archive_glob,
-            has_header=has_header,
-            resume=resume,
-            retry_failed=retry_failed,
-            sample=sample,
-            file_list_filter_fn=file_list_filter_fn,
-            filesystem=filesystem,
-            expected_archive_file_count=expected_archive_file_count,
-        )
+        glob = glob or (f"*.{compression_type}" if compression_type else f"*.{filetype}")
+        archive_glob = archive_glob or (f"*.{filetype}" if compression_type else None)
+        source_dir = normalize_path(source_dir)
 
+        if is_s3_path(source_dir):
+            fs = get_s3_filesystem(filesystem)
+            s3_paths = fs.glob(f"{source_dir}/**/{glob}")
+            file_list = [f"s3://{p}" if not p.startswith("s3://") else p for p in s3_paths]
+        else:
+            file_list = [f.as_posix() for f in Path(source_dir).rglob(glob)]
 
-def _add_files_to_metadata_table_impl(
-    conninfo: str,
-    schema: str,
-    source_dir: str,
-    filetype: str,
-    glob: Optional[str] = None,
-    compression_type: Optional[str] = None,
-    archive_glob: Optional[str] = None,
-    has_header: bool = True,
-    resume: bool = False,
-    retry_failed: bool = False,
-    sample: Optional[int] = None,
-    file_list_filter_fn: Optional[Callable[[List[str]], List[str]]] = None,
-    filesystem: Optional[Any] = None,
-    expected_archive_file_count: Optional[int] = None,
-) -> pd.DataFrame:
-    """Internal implementation of add_files_to_metadata_table"""
-    if not glob:
-        glob = f"*.{compression_type}" if compression_type else f"*.{filetype}"
+        if file_list_filter_fn:
+            file_list = file_list_filter_fn(file_list)
+        file_list = sorted(file_list)
 
-    if compression_type and not archive_glob:
-        archive_glob = f"*.{filetype}"
-
-    source_dir = normalize_path(source_dir)
-
-    # Handle S3 or local paths for file listing
-    if is_s3_path(source_dir):
-        fs = get_s3_filesystem(filesystem)
-        s3_glob_pattern = f"{source_dir}/**/{glob}"
-        s3_paths = fs.glob(s3_glob_pattern)
-        file_list = [f"s3://{p}" if not p.startswith("s3://") else p for p in s3_paths]
-    else:
-        file_list = [f.as_posix() for f in Path(source_dir).rglob(glob)]
-
-    if file_list_filter_fn:
-        file_list = file_list_filter_fn(file_list)
-
-    file_list = sorted(file_list)
-
-    output_table = f"{schema}.metadata"
-    archive_metadata_table = f"{schema}.archive_metadata"
-
-    # Create metadata table if it doesn't exist
-    with psycopg.connect(conninfo) as conn:
-        if not table_exists(conn, schema, "metadata"):
-            create_table_sql = f"""
-                CREATE TABLE {output_table} (
-                    source_path TEXT PRIMARY KEY,
-                    source_dir TEXT,
-                    filesize BIGINT,
-                    header TEXT[],
-                    row_count BIGINT,
-                    file_hash TEXT,
-                    metadata_ingest_datetime TIMESTAMP,
-                    metadata_ingest_status TEXT,
-                    ingest_datetime TIMESTAMP,
-                    ingest_runtime INTEGER,
-                    status TEXT,
-                    error_message TEXT,
-                    unpivot_row_multiplier INTEGER,
-                    output_table TEXT
-                )
-            """
-            with conn.cursor() as cur:
-                cur.execute(create_table_sql)
-            conn.commit()
-
-        if compression_type and not table_exists(conn, schema, "archive_metadata"):
-            create_archive_table_sql = f"""
-                CREATE TABLE {archive_metadata_table} (
-                    archive_path TEXT PRIMARY KEY,
-                    source_dir TEXT,
-                    expected_file_count INTEGER,
-                    processed_file_count INTEGER,
-                    status TEXT,
-                    ingest_datetime TIMESTAMP
-                )
-            """
-            with conn.cursor() as cur:
-                cur.execute(create_archive_table_sql)
-            conn.commit()
-
-    source_path_list = []
-    completed_archives = set()
-
-    if resume:
-        source_dir_match = source_dir + "/"
-        resume_query = sql.SQL(
-            """
-            SELECT source_path
-            FROM {}.metadata
-            WHERE
-                source_dir = %s
-                {}
-            """
-        ).format(
-            sql.Identifier(schema),
-            sql.SQL(
-                "AND metadata_ingest_status = 'Success'" if not retry_failed else ""
-            ),
-        )
+        output_table = f"{schema}.metadata"
+        archive_metadata_table = f"{schema}.archive_metadata"
 
         with psycopg.connect(conninfo) as conn:
-            with conn.cursor() as cur:
-                cur.execute(resume_query, (source_dir_match,))
-                rows = cur.fetchall()
-        source_path_list = [row[0] for row in rows]
+            if not table_exists(conn, schema, "metadata"):
+                conn.execute(f"""
+                    CREATE TABLE {output_table} (
+                        source_path TEXT PRIMARY KEY, source_dir TEXT, filesize BIGINT,
+                        header TEXT[], row_count BIGINT, file_hash TEXT,
+                        metadata_ingest_datetime TIMESTAMP, metadata_ingest_status TEXT,
+                        ingest_datetime TIMESTAMP, ingest_runtime INTEGER, status TEXT,
+                        error_message TEXT, unpivot_row_multiplier INTEGER, output_table TEXT
+                    )
+                """)
+                conn.commit()
+            if compression_type and not table_exists(conn, schema, "archive_metadata"):
+                conn.execute(f"""
+                    CREATE TABLE {archive_metadata_table} (
+                        archive_path TEXT PRIMARY KEY, source_dir TEXT,
+                        expected_file_count INTEGER, processed_file_count INTEGER,
+                        status TEXT, ingest_datetime TIMESTAMP
+                    )
+                """)
+                conn.commit()
 
-        if compression_type:
-            archive_query = sql.SQL(
-                """
-                SELECT archive_path
-                FROM {}.archive_metadata
-                WHERE
-                    source_dir = %s
-                    AND status = 'Success'
-                """
-            ).format(sql.Identifier(schema))
-
+        source_path_list, completed_archives = [], set()
+        if resume:
+            source_dir_match = source_dir + "/"
+            resume_query = sql.SQL(
+                "SELECT source_path FROM {}.metadata WHERE source_dir = %s {}"
+            ).format(
+                sql.Identifier(schema),
+                sql.SQL("AND metadata_ingest_status = 'Success'" if not retry_failed else ""),
+            )
             with psycopg.connect(conninfo) as conn:
                 with conn.cursor() as cur:
-                    cur.execute(archive_query, (source_dir_match,))
-                    archive_rows = cur.fetchall()
-            completed_archives = {row[0] for row in archive_rows}
+                    cur.execute(resume_query, (source_dir_match,))
+                    source_path_list = [row[0] for row in cur.fetchall()]
 
-            if completed_archives:
-                original_count = len(file_list)
-                file_list = [f for f in file_list if f not in completed_archives]
-                skipped_count = original_count - len(file_list)
-                if skipped_count > 0:
-                    print(f"Skipping {skipped_count} completed archive(s)")
+            if compression_type:
+                archive_query = sql.SQL(
+                    "SELECT archive_path FROM {}.archive_metadata WHERE source_dir = %s AND status = 'Success'"
+                ).format(sql.Identifier(schema))
+                with psycopg.connect(conninfo) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(archive_query, (source_dir_match,))
+                        completed_archives = {row[0] for row in cur.fetchall()}
+                if completed_archives:
+                    orig_count = len(file_list)
+                    file_list = [f for f in file_list if f not in completed_archives]
+                    if orig_count - len(file_list) > 0:
+                        print(f"Skipping {orig_count - len(file_list)} completed archive(s)")
 
-    if compression_type == "zip":
-        rows, archive_stats = extract_and_add_zip_files(
-            file_list=file_list,
-            source_path_list=source_path_list,
-            source_dir=source_dir,
-            has_header=has_header,
-            filetype=filetype,
-            resume=resume,
-            sample=sample,
-            archive_glob=archive_glob,
-            filesystem=filesystem,
-        )
-    elif compression_type is None:
-        rows = add_files(
-            source_dir=source_dir,
-            file_list=file_list,
-            filetype=filetype,
-            has_header=has_header,
-            resume=resume,
-            sample=sample,
-            source_path_list=source_path_list,
-            filesystem=filesystem,
-        )
-        archive_stats = {}
-    else:
-        raise Exception(f"Unsupported compression type: {compression_type}")
+        if compression_type == "zip":
+            rows, archive_stats = extract_and_add_zip_files(
+                file_list, source_path_list, source_dir, has_header, filetype,
+                resume, sample, archive_glob, filesystem,
+            )
+        elif compression_type is None:
+            rows = add_files(source_dir, file_list, filetype, has_header, resume, sample,
+                             source_path_list, filesystem)
+            archive_stats = {}
+        else:
+            raise Exception(f"Unsupported compression type: {compression_type}")
 
-    # Update archive_metadata for processed archives
-    if compression_type and archive_stats and expected_archive_file_count is not None:
-        from datetime import datetime
+        if compression_type and archive_stats and expected_archive_file_count is not None:
+            from datetime import datetime
+            source_dir_match = source_dir + "/"
+            with psycopg.connect(conninfo) as conn:
+                with conn.cursor() as cur:
+                    for archive_path, processed_count in archive_stats.items():
+                        status = "Success" if processed_count >= expected_archive_file_count else "Partial"
+                        cur.execute(f"""
+                            INSERT INTO {archive_metadata_table}
+                            (archive_path, source_dir, expected_file_count, processed_file_count, status, ingest_datetime)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (archive_path) DO UPDATE SET
+                                processed_file_count = {archive_metadata_table}.processed_file_count + EXCLUDED.processed_file_count,
+                                status = CASE WHEN {archive_metadata_table}.processed_file_count + EXCLUDED.processed_file_count >= EXCLUDED.expected_file_count THEN 'Success' ELSE 'Partial' END,
+                                ingest_datetime = EXCLUDED.ingest_datetime
+                        """, (archive_path, source_dir_match, expected_archive_file_count, processed_count,
+                              status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                conn.commit()
 
-        source_dir_match = source_dir + "/"
+        if not rows:
+            print("Did not add any files to metadata table")
+        else:
+            with psycopg.connect(conninfo) as conn:
+                with conn.cursor() as cur:
+                    for row in sorted(rows, key=lambda x: x["source_path"] or ""):
+                        cur.execute(f"""
+                            INSERT INTO {output_table}
+                            (source_path, source_dir, filesize, header, row_count, file_hash, metadata_ingest_datetime, metadata_ingest_status)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (source_path) DO UPDATE SET
+                                source_dir = EXCLUDED.source_dir, filesize = EXCLUDED.filesize, header = EXCLUDED.header,
+                                row_count = EXCLUDED.row_count, file_hash = EXCLUDED.file_hash,
+                                metadata_ingest_datetime = EXCLUDED.metadata_ingest_datetime, metadata_ingest_status = EXCLUDED.metadata_ingest_status
+                        """, (row["source_path"], row["source_dir"], row["filesize"], row["header"],
+                              row["row_count"], row["file_hash"], row["metadata_ingest_datetime"], row["metadata_ingest_status"]))
+                conn.commit()
+
+        source_dir_match = normalize_path(source_dir) + "/"
+        result_query = sql.SQL(
+            "SELECT * FROM {}.metadata WHERE source_dir = %s ORDER BY metadata_ingest_datetime DESC"
+        ).format(sql.Identifier(schema))
         with psycopg.connect(conninfo) as conn:
             with conn.cursor() as cur:
-                for archive_path, processed_count in archive_stats.items():
-                    status = (
-                        "Success"
-                        if processed_count >= expected_archive_file_count
-                        else "Partial"
-                    )
-                    cur.execute(
-                        f"""
-                        INSERT INTO {archive_metadata_table}
-                        (archive_path, source_dir, expected_file_count, processed_file_count, status, ingest_datetime)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (archive_path)
-                        DO UPDATE SET
-                            processed_file_count = {archive_metadata_table}.processed_file_count + EXCLUDED.processed_file_count,
-                            status = CASE
-                                WHEN {archive_metadata_table}.processed_file_count + EXCLUDED.processed_file_count >= EXCLUDED.expected_file_count
-                                THEN 'Success'
-                                ELSE 'Partial'
-                            END,
-                            ingest_datetime = EXCLUDED.ingest_datetime
-                        """,
-                        (
-                            archive_path,
-                            source_dir_match,
-                            expected_archive_file_count,
-                            processed_count,
-                            status,
-                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        ),
-                    )
-            conn.commit()
-
-    if len(rows) == 0:
-        print("Did not add any files to metadata table")
-    else:
-        rows_sorted = sorted(rows, key=lambda x: x["source_path"] or "")
-
-        with psycopg.connect(conninfo) as conn:
-            with conn.cursor() as cur:
-                for row in rows_sorted:
-                    cur.execute(
-                        f"""
-                        INSERT INTO {output_table}
-                        (source_path, source_dir, filesize, header, row_count,
-                         file_hash, metadata_ingest_datetime, metadata_ingest_status)
-                        VALUES
-                        (%s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (source_path)
-                        DO UPDATE SET
-                            source_dir = EXCLUDED.source_dir,
-                            filesize = EXCLUDED.filesize,
-                            header = EXCLUDED.header,
-                            row_count = EXCLUDED.row_count,
-                            file_hash = EXCLUDED.file_hash,
-                            metadata_ingest_datetime = EXCLUDED.metadata_ingest_datetime,
-                            metadata_ingest_status = EXCLUDED.metadata_ingest_status
-                        """,
-                        (
-                            row["source_path"],
-                            row["source_dir"],
-                            row["filesize"],
-                            row["header"],
-                            row["row_count"],
-                            row["file_hash"],
-                            row["metadata_ingest_datetime"],
-                            row["metadata_ingest_status"],
-                        ),
-                    )
-            conn.commit()
-
-    # Return metadata results
-    source_dir_match = normalize_path(source_dir) + "/"
-    result_query = sql.SQL(
-        """
-        SELECT *
-        FROM {}.metadata
-        WHERE source_dir = %s
-        ORDER BY metadata_ingest_datetime DESC
-        """
-    ).format(sql.Identifier(schema))
-
-    with psycopg.connect(conninfo) as conn:
-        with conn.cursor() as cur:
-            cur.execute(result_query, (source_dir_match,))
-            columns = [desc[0] for desc in cur.description]
-            rows = cur.fetchall()
-            return pd.DataFrame(rows, columns=columns)
+                cur.execute(result_query, (source_dir_match,))
+                return pd.DataFrame(cur.fetchall(), columns=[desc[0] for desc in cur.description])
 
 
-def drop_metadata_by_source(
-    conninfo: str,
-    source_dir: str,
-    schema: str,
-) -> None:
+def drop_metadata_by_source(conninfo: str, source_dir: str, schema: str) -> None:
     """Remove all files from a source directory from metadata"""
     source_dir = Path(source_dir).as_posix()
-
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL(
-                    "SELECT COUNT(*) FROM {}.metadata WHERE source_dir LIKE %s"
-                ).format(sql.Identifier(schema)),
-                (source_dir,),
-            )
-            count_before = cur.fetchone()[0]
-
-        print(f"Rows before drop: {count_before}")
-
-        with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL("DELETE FROM {}.metadata WHERE source_dir LIKE %s").format(
-                    sql.Identifier(schema)
-                ),
-                (source_dir,),
-            )
-            print(f"Deleted {cur.rowcount} rows")
+            cur.execute(sql.SQL("DELETE FROM {}.metadata WHERE source_dir LIKE %s").format(
+                sql.Identifier(schema)), (source_dir,))
+            print(f"Deleted {cur.rowcount} rows from {schema}.metadata")
         conn.commit()
 
-        with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL(
-                    "SELECT COUNT(*) FROM {}.metadata WHERE source_dir LIKE %s"
-                ).format(sql.Identifier(schema)),
-                (source_dir,),
-            )
-            count_after = cur.fetchone()[0]
 
-        print(f"Rows after drop: {count_after}")
-
-
-def drop_partition(
-    conninfo: str,
-    table: str,
-    partition_key: str,
-    schema: str,
-) -> None:
+def drop_partition(conninfo: str, table: str, partition_key: str, schema: str) -> None:
     """Delete records matching partition key from table"""
-    print(
-        f"Running: DELETE FROM {schema}.{table} WHERE source_path LIKE '{partition_key}'"
-    )
-
     with psycopg.connect(conninfo) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL("DELETE FROM {}.{} WHERE source_path LIKE %s").format(
-                    sql.Identifier(schema), sql.Identifier(table)
-                ),
-                (partition_key,),
-            )
-            print(f"Deleted {cur.rowcount} rows")
+            cur.execute(sql.SQL("DELETE FROM {}.{} WHERE source_path LIKE %s").format(
+                sql.Identifier(schema), sql.Identifier(table)), (partition_key,))
+            print(f"Deleted {cur.rowcount} rows from {schema}.{table}")
         conn.commit()
 
 
@@ -1916,174 +1481,73 @@ def drop_file_from_metadata_and_table(
     )
 
 
-# =============================================================================
-# CLI Schema Inference Functions
-# =============================================================================
-
-
 def to_snake_case(name: str) -> str:
     """Convert a string to snake_case using inflection library"""
     import inflection
+    return inflection.parameterize(inflection.underscore(inflection.transliterate(name)), separator="_")
 
-    return inflection.parameterize(
-        inflection.underscore(inflection.transliterate(name)), separator="_"
-    )
+
+def _build_column_mapping(df: pd.DataFrame, has_header: bool = True) -> Dict[str, Tuple[List[str], str]]:
+    """Build column_mapping from DataFrame with snake_case conversion."""
+    column_mapping = {}
+    for i, col in enumerate(df.columns):
+        original_col = str(col) if has_header else f"col_{i}"
+        series = df[col]
+        type_string = "string" if series.isna().all() else pandas_dtype_to_type_str(series.dtype)
+        snake = to_snake_case(original_col)
+        column_mapping[snake] = ([], type_string) if snake == original_col else ([original_col], type_string)
+    return column_mapping
 
 
 def infer_schema_from_file(
-    file_path: str,
-    filetype: Optional[str] = None,
-    has_header: bool = True,
-    encoding: Optional[str] = None,
-    excel_skiprows: int = 0,
-    sample_rows: int = 20000,
+    file_path: str, filetype: Optional[str] = None, has_header: bool = True,
+    encoding: Optional[str] = None, excel_skiprows: int = 0, sample_rows: int = 20000,
 ) -> Dict[str, Any]:
-    """
-    Infer schema from file using pandas.
-
-    Returns:
-        Dictionary with column_mapping, null_values, and encoding
-    """
+    """Infer schema from file using pandas. Returns dict with column_mapping, null_values, encoding."""
     path = Path(file_path)
-
-    if not filetype:
-        ext = path.suffix.lower().lstrip(".")
-        filetype = ext if ext in FILETYPE_REGISTRY else "csv"
-
+    filetype = filetype or (path.suffix.lower().lstrip(".") if path.suffix.lower().lstrip(".") in FILETYPE_REGISTRY else "csv")
     config = get_filetype_config(filetype)
 
     if config.reader_key == "delimited":
         encoding = encoding or "utf-8"
-
-        sep = config.separator
-        if filetype == "csv":
-            # Use sep=None with python engine for auto-detection
-            sep = None
-
+        sep = None if filetype == "csv" else config.separator
         try:
-            df = pd.read_csv(
-                file_path,
-                sep=sep,
-                engine="python" if sep is None else None,
-                encoding=encoding,
-                header=0 if has_header else None,
-                nrows=sample_rows,
-                on_bad_lines="skip",
-            )
-            # Handle pandas bug with single-column files
+            df = pd.read_csv(file_path, sep=sep, engine="python" if sep is None else None,
+                             encoding=encoding, header=0 if has_header else None,
+                             nrows=sample_rows, on_bad_lines="skip")
             if sep is None and any("Unnamed" in str(c) for c in df.columns):
-                df = pd.read_csv(
-                    file_path,
-                    sep=",",
-                    encoding=encoding,
-                    header=0 if has_header else None,
-                    nrows=sample_rows,
-                    on_bad_lines="skip",
-                    low_memory=False,
-                )
+                df = pd.read_csv(file_path, sep=",", encoding=encoding, header=0 if has_header else None,
+                                 nrows=sample_rows, on_bad_lines="skip", low_memory=False)
         except pd.errors.EmptyDataError:
             return {"column_mapping": {}, "null_values": None, "encoding": encoding}
-
-        column_mapping = {}
-        for i, col in enumerate(df.columns):
-            if has_header:
-                original_col = str(col)
-                series = df[col]
-            else:
-                original_col = f"col_{i}"
-                series = df[col]
-
-            if series.isna().all():
-                type_string = "string"
-            else:
-                type_string = pandas_dtype_to_type_str(series.dtype)
-
-            snake_case_col = to_snake_case(original_col)
-
-            if snake_case_col == original_col:
-                column_mapping[snake_case_col] = ([], type_string)
-            else:
-                column_mapping[snake_case_col] = ([original_col], type_string)
-
-        return {
-            "column_mapping": column_mapping,
-            "null_values": None,
-            "encoding": encoding,
-        }
+        return {"column_mapping": _build_column_mapping(df, has_header), "null_values": None, "encoding": encoding}
 
     elif config.reader_key == "xlsx":
-        df = pd.read_excel(
-            file_path,
-            skiprows=excel_skiprows,
-            nrows=sample_rows,
-        )
-
-        column_mapping = {}
-        for col in df.columns:
-            type_string = pandas_dtype_to_type_str(df[col].dtype)
-            original_col = str(col)
-            snake_case_col = to_snake_case(original_col)
-            if snake_case_col == original_col:
-                column_mapping[snake_case_col] = ([], type_string)
-            else:
-                column_mapping[snake_case_col] = ([original_col], type_string)
-
-        return {"column_mapping": column_mapping, "null_values": None, "encoding": None}
+        df = pd.read_excel(file_path, skiprows=excel_skiprows, nrows=sample_rows)
+        return {"column_mapping": _build_column_mapping(df), "null_values": None, "encoding": None}
 
     elif config.reader_key == "parquet":
         df = pd.read_parquet(file_path)
         if sample_rows:
             df = df.head(sample_rows)
-
-        column_mapping = {}
-        for col in df.columns:
-            type_string = pandas_dtype_to_type_str(df[col].dtype)
-            original_col = str(col)
-            snake_case_col = to_snake_case(original_col)
-            if snake_case_col == original_col:
-                column_mapping[snake_case_col] = ([], type_string)
-            else:
-                column_mapping[snake_case_col] = ([original_col], type_string)
-
-        return {"column_mapping": column_mapping, "null_values": None, "encoding": None}
+        return {"column_mapping": _build_column_mapping(df), "null_values": None, "encoding": None}
 
     elif config.reader_key == "xml":
         df = pd.read_xml(file_path, parser="etree")
-
         if sample_rows and len(df) > sample_rows:
             df = df.head(sample_rows)
-
         if df.empty:
             return {"column_mapping": {}, "null_values": None, "encoding": None}
-
-        # Try to infer types by attempting numeric conversion
         for col in df.columns:
             try:
                 numeric_vals = pd.to_numeric(df[col], errors="coerce")
                 if numeric_vals.notna().any():
-                    if (
-                        numeric_vals.dropna() == numeric_vals.dropna().astype(int)
-                    ).all():
-                        df[col] = numeric_vals.astype("Int64")
-                    else:
-                        df[col] = numeric_vals
+                    df[col] = numeric_vals.astype("Int64") if (numeric_vals.dropna() == numeric_vals.dropna().astype(int)).all() else numeric_vals
             except Exception:
                 pass
+        return {"column_mapping": _build_column_mapping(df), "null_values": None, "encoding": None}
 
-        column_mapping = {}
-        for col in df.columns:
-            type_string = pandas_dtype_to_type_str(df[col].dtype)
-            original_col = str(col)
-            snake_case_col = to_snake_case(original_col)
-            if snake_case_col == original_col:
-                column_mapping[snake_case_col] = ([], type_string)
-            else:
-                column_mapping[snake_case_col] = ([original_col], type_string)
-
-        return {"column_mapping": column_mapping, "null_values": None, "encoding": None}
-
-    else:
-        raise ValueError(f"Unsupported filetype: {filetype}")
+    raise ValueError(f"Unsupported filetype: {filetype}")
 
 
 if __name__ == "__main__":
@@ -2105,129 +1569,45 @@ Note: Delimiter is auto-detected for CSV/TSV/PSV files.
         """,
     )
 
-    parser.add_argument(
-        "path",
-        help="Path to the input file or directory",
-    )
-
-    parser.add_argument(
-        "--filetype",
-        choices=list(FILETYPE_REGISTRY.keys()),
-        help="File type (auto-detected from extension if not provided)",
-    )
-
-    parser.add_argument(
-        "--no-header",
-        action="store_true",
-        help="File has no header row",
-    )
-
-    parser.add_argument(
-        "--excel-skiprows",
-        type=int,
-        default=0,
-        help="Number of rows to skip in Excel files (default: 0)",
-    )
-
-    parser.add_argument(
-        "--sample-rows",
-        type=int,
-        default=20000,
-        help="Number of rows to sample for type inference (default: 20000)",
-    )
-
-    parser.add_argument(
-        "--encoding",
-        type=str,
-        default=None,
-        help="File encoding (e.g., utf-8, latin-1, cp1252). Defaults to utf-8.",
-    )
-
+    parser.add_argument("path", help="Path to the input file or directory")
+    parser.add_argument("--filetype", choices=list(FILETYPE_REGISTRY.keys()), help="File type (auto-detected)")
+    parser.add_argument("--no-header", action="store_true", help="File has no header row")
+    parser.add_argument("--excel-skiprows", type=int, default=0, help="Rows to skip in Excel files")
+    parser.add_argument("--sample-rows", type=int, default=20000, help="Rows to sample for type inference")
+    parser.add_argument("--encoding", type=str, default=None, help="File encoding (default: utf-8)")
     args = parser.parse_args()
 
     input_path = Path(args.path)
-
     if not input_path.exists():
         print(f"Error: Path not found: {args.path}", file=sys.stderr)
         sys.exit(1)
 
+    def process_file(fp):
+        result = infer_schema_from_file(str(fp), args.filetype, not args.no_header, args.encoding, args.excel_skiprows, args.sample_rows)
+        out = {"table_name": to_snake_case(fp.stem), "column_mapping": result["column_mapping"]}
+        if result.get("null_values"): out["null_values"] = result["null_values"]
+        if result.get("encoding"): out["encoding"] = result["encoding"]
+        return out
+
     try:
         if input_path.is_dir():
-            if args.filetype:
-                extensions = [f".{args.filetype}"]
-            else:
-                extensions = [f".{ft}" for ft in FILETYPE_REGISTRY.keys()]
-
-            files = sorted(
-                [
-                    f
-                    for f in input_path.iterdir()
-                    if f.is_file() and f.suffix.lower() in extensions
-                ]
-            )
-
+            exts = [f".{args.filetype}"] if args.filetype else [f".{ft}" for ft in FILETYPE_REGISTRY.keys()]
+            files = sorted(f for f in input_path.iterdir() if f.is_file() and f.suffix.lower() in exts)
             if not files:
-                print(f"Error: No matching files found in {args.path}", file=sys.stderr)
-                print(f"Looking for extensions: {extensions}", file=sys.stderr)
+                print(f"Error: No matching files in {args.path}", file=sys.stderr)
                 sys.exit(1)
-
             output = {}
-            total_files = len(files)
-            for i, file_path in enumerate(files):
+            for i, fp in enumerate(files):
                 try:
-                    print(
-                        f"{i + 1}/{total_files} Inferring schema: {file_path.name}",
-                        file=sys.stderr,
-                    )
-                    result = infer_schema_from_file(
-                        file_path=str(file_path),
-                        filetype=args.filetype,
-                        has_header=not args.no_header,
-                        encoding=args.encoding,
-                        excel_skiprows=args.excel_skiprows,
-                        sample_rows=args.sample_rows,
-                    )
-                    file_output = {
-                        "table_name": to_snake_case(file_path.stem),
-                        "column_mapping": result["column_mapping"],
-                    }
-                    if result.get("null_values"):
-                        file_output["null_values"] = result["null_values"]
-                    if result.get("encoding"):
-                        file_output["encoding"] = result["encoding"]
-                    output[file_path.name] = file_output
+                    print(f"{i+1}/{len(files)} Inferring: {fp.name}", file=sys.stderr)
+                    output[fp.name] = process_file(fp)
                 except Exception as e:
-                    print(
-                        f"{i + 1}/{total_files} Failed: {file_path.name} - {e}",
-                        file=sys.stderr,
-                    )
-                    output[file_path.name] = {"error": str(e)}
-
-            print(json.dumps(output, indent=2))
-
+                    print(f"{i+1}/{len(files)} Failed: {fp.name} - {e}", file=sys.stderr)
+                    output[fp.name] = {"error": str(e)}
         else:
             print(f"Inferring schema: {input_path.name}", file=sys.stderr)
-            result = infer_schema_from_file(
-                file_path=str(input_path),
-                filetype=args.filetype,
-                has_header=not args.no_header,
-                encoding=args.encoding,
-                excel_skiprows=args.excel_skiprows,
-                sample_rows=args.sample_rows,
-            )
-
-            file_output = {
-                "table_name": to_snake_case(input_path.stem),
-                "column_mapping": result["column_mapping"],
-            }
-            if result.get("null_values"):
-                file_output["null_values"] = result["null_values"]
-            if result.get("encoding"):
-                file_output["encoding"] = result["encoding"]
-
-            output = {input_path.name: file_output}
-            print(json.dumps(output, indent=2))
-
+            output = {input_path.name: process_file(input_path)}
+        print(json.dumps(output, indent=2))
     except Exception as e:
-        print(f"Error inferring schema: {e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
