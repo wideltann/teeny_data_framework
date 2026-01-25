@@ -40,6 +40,7 @@ from table_functions import (
     get_persistent_temp_dir,
     get_cache_path_from_s3,
     get_cache_path_from_source_path,
+    download_s3_file_with_cache,
     set_temp_dir_override,
     # Column mapping
     prepare_column_mapping,
@@ -443,7 +444,9 @@ class TestCachePaths:
         set_temp_dir_override(temp_dir)
         try:
             # Where the downloaded archive goes
-            archive_cache = get_cache_path_from_s3("s3://bucket/data.zip", is_archive=True)
+            archive_cache = get_cache_path_from_s3(
+                "s3://bucket/data.zip", is_archive=True
+            )
             # Where extracted contents go
             extracted_cache = get_cache_path_from_source_path(
                 "s3://bucket/data.zip::inner/file.csv"
@@ -6002,6 +6005,307 @@ class TestXMLReading:
         assert "col_b" in df.columns
         assert "col_c" in df.columns
         assert df["col_a"][0] == "A"
+
+
+class TestDownloadS3FileWithCache:
+    """Test download_s3_file_with_cache function"""
+
+    def test_downloads_file_when_not_cached(self, temp_dir):
+        """Test that file is downloaded when not in cache"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Mock filesystem
+            mock_fs = Mock()
+            mock_fs.info.return_value = {"size": 100}
+            mock_fs.get = Mock()
+
+            s3_path = "s3://bucket/data/file.csv"
+            result = download_s3_file_with_cache(s3_path, mock_fs)
+
+            # Should call info and get
+            mock_fs.info.assert_called_once_with(s3_path)
+            mock_fs.get.assert_called_once()
+
+            # Result should be the cache path
+            expected = (
+                Path(temp_dir).resolve() / "temp" / "bucket" / "data" / "file.csv"
+            )
+            assert result.resolve() == expected
+        finally:
+            os.chdir(original_cwd)
+
+    def test_skips_download_when_cached_with_matching_size(self, temp_dir):
+        """Test that download is skipped when cached file has matching size"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create cached file
+            cache_dir = temp_dir / "temp" / "bucket" / "data"
+            cache_dir.mkdir(parents=True)
+            cached_file = cache_dir / "file.csv"
+            cached_file.write_text("x" * 100)  # 100 bytes
+
+            # Mock filesystem returning same size
+            mock_fs = Mock()
+            mock_fs.info.return_value = {"size": 100}
+            mock_fs.get = Mock()
+
+            s3_path = "s3://bucket/data/file.csv"
+            result = download_s3_file_with_cache(s3_path, mock_fs)
+
+            # Should call info but NOT get (cache hit)
+            mock_fs.info.assert_called_once_with(s3_path)
+            mock_fs.get.assert_not_called()
+
+            assert result.resolve() == cached_file.resolve()
+        finally:
+            os.chdir(original_cwd)
+
+    def test_redownloads_when_size_mismatch(self, temp_dir):
+        """Test that file is re-downloaded when cached size differs"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create cached file with different size
+            cache_dir = temp_dir / "temp" / "bucket" / "data"
+            cache_dir.mkdir(parents=True)
+            cached_file = cache_dir / "file.csv"
+            cached_file.write_text("x" * 50)  # 50 bytes
+
+            # Mock filesystem returning different size
+            mock_fs = Mock()
+            mock_fs.info.return_value = {"size": 100}  # S3 has 100 bytes
+            mock_fs.get = Mock()
+
+            s3_path = "s3://bucket/data/file.csv"
+            result = download_s3_file_with_cache(s3_path, mock_fs)
+
+            # Should call both info and get (size mismatch triggers download)
+            mock_fs.info.assert_called_once_with(s3_path)
+            mock_fs.get.assert_called_once()
+        finally:
+            os.chdir(original_cwd)
+
+    def test_archive_uses_archives_subdirectory(self, temp_dir):
+        """Test that archives are downloaded to temp/archives/ subdirectory"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            mock_fs = Mock()
+            mock_fs.info.return_value = {"size": 1000}
+            mock_fs.get = Mock()
+
+            s3_path = "s3://bucket/data/archive.zip"
+            result = download_s3_file_with_cache(s3_path, mock_fs, is_archive=True)
+
+            # Archives should go to temp/archives/
+            expected = (
+                Path(temp_dir).resolve()
+                / "temp"
+                / "archives"
+                / "bucket"
+                / "data"
+                / "archive.zip"
+            )
+            assert result.resolve() == expected
+        finally:
+            os.chdir(original_cwd)
+
+
+class TestUpdateTableWithFilesystem:
+    """Test that update_table accepts and uses filesystem parameter"""
+
+    def test_update_table_accepts_filesystem_parameter(
+        self, temp_dir, postgres_container
+    ):
+        """Test that update_table accepts filesystem parameter without error"""
+        conninfo = postgres_container.get_connection_url().replace("+psycopg2", "")
+
+        # Create schema
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                cur.execute("CREATE SCHEMA IF NOT EXISTS test_schema")
+            conn.commit()
+
+        # Create a test CSV file
+        csv_file = temp_dir / "test.csv"
+        csv_file.write_text("col1,col2\na,1\nb,2\n")
+
+        # Add file to metadata first
+        add_files_to_metadata_table(
+            conninfo=conninfo,
+            schema="test_schema",
+            source_dir=str(temp_dir) + "/",
+            filetype="csv",
+        )
+
+        # Mock filesystem (won't be used for local files but should be accepted)
+        mock_fs = Mock()
+
+        # Call update_table with filesystem parameter - should not raise
+        column_mapping = {
+            "col1": ([], "string"),
+            "col2": ([], "string"),
+        }
+
+        result = update_table(
+            conninfo=conninfo,
+            schema="test_schema",
+            source_dir=str(temp_dir) + "/",
+            filetype="csv",
+            output_table="test_table",
+            column_mapping=column_mapping,
+            filesystem=mock_fs,  # Should be accepted
+        )
+
+        # Verify data was ingested
+        with psycopg.connect(conninfo) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM test_schema.test_table")
+                count = cur.fetchone()[0]
+                assert count == 2
+
+
+class TestUpdateTableS3Download:
+    """Test that update_table downloads S3 files before processing"""
+
+    def test_update_table_downloads_s3_files(self, temp_dir, postgres_container):
+        """Test that update_table downloads S3 files using download_s3_file_with_cache"""
+        import os
+
+        conninfo = postgres_container.get_connection_url().replace("+psycopg2", "")
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create schema and metadata table
+            with psycopg.connect(conninfo) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("CREATE SCHEMA IF NOT EXISTS test_schema")
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS test_schema.metadata (
+                            source_dir TEXT,
+                            source_path TEXT PRIMARY KEY,
+                            filesize BIGINT,
+                            header TEXT[],
+                            row_count BIGINT,
+                            file_hash TEXT,
+                            metadata_ingest_datetime TIMESTAMP,
+                            metadata_ingest_status TEXT,
+                            ingest_datetime TIMESTAMP,
+                            ingest_runtime INTEGER,
+                            status TEXT,
+                            error_message TEXT,
+                            unpivot_row_multiplier INTEGER,
+                            output_table TEXT
+                        )
+                    """)
+                    # Insert a fake S3 file path
+                    cur.execute("""
+                        INSERT INTO test_schema.metadata
+                        (source_path, source_dir, row_count, metadata_ingest_status)
+                        VALUES ('s3://bucket/data/file.csv', 's3://bucket/data/', 2, 'Success')
+                    """)
+                conn.commit()
+
+            # Create the cached file (simulating what download would do)
+            cache_dir = temp_dir / "temp" / "bucket" / "data"
+            cache_dir.mkdir(parents=True)
+            cached_file = cache_dir / "file.csv"
+            cached_file.write_text("col1,col2\na,1\nb,2\n")
+
+            # Mock filesystem
+            mock_fs = Mock()
+            mock_fs.info.return_value = {"size": cached_file.stat().st_size}
+
+            column_mapping = {
+                "col1": ([], "string"),
+                "col2": ([], "string"),
+            }
+
+            # Patch download_s3_file_with_cache to track calls
+            with patch("table_functions.download_s3_file_with_cache") as mock_download:
+                mock_download.return_value = cached_file
+
+                result = update_table(
+                    conninfo=conninfo,
+                    schema="test_schema",
+                    source_dir="s3://bucket/data/",
+                    filetype="csv",
+                    output_table="test_table",
+                    column_mapping=column_mapping,
+                    filesystem=mock_fs,
+                )
+
+                # Verify download was called for the S3 file
+                mock_download.assert_called_once()
+                call_args = mock_download.call_args
+                assert call_args[0][0] == "s3://bucket/data/file.csv"
+                assert call_args[0][1] == mock_fs
+
+        finally:
+            os.chdir(original_cwd)
+
+
+class TestAddFilesUsesDownloadWithCache:
+    """Test that add_files uses download_s3_file_with_cache for S3 files"""
+
+    def test_add_files_uses_cached_download(self, temp_dir):
+        """Test that add_files calls download_s3_file_with_cache for S3 paths"""
+        import os
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create the cached file
+            cache_dir = temp_dir / "temp" / "bucket" / "data"
+            cache_dir.mkdir(parents=True)
+            cached_file = cache_dir / "file.csv"
+            cached_file.write_text("col1,col2\na,1\n")
+
+            # Mock filesystem
+            mock_fs = Mock()
+            mock_fs.info.return_value = {"size": cached_file.stat().st_size}
+
+            with patch("table_functions.download_s3_file_with_cache") as mock_download:
+                mock_download.return_value = cached_file
+
+                result = add_files(
+                    source_dir="s3://bucket/data/",
+                    resume=False,
+                    sample=None,
+                    file_list=["s3://bucket/data/file.csv"],
+                    filetype="csv",
+                    has_header=True,
+                    source_path_list=[],
+                    filesystem=mock_fs,
+                )
+
+                # Verify download_s3_file_with_cache was called
+                mock_download.assert_called_once_with(
+                    "s3://bucket/data/file.csv", mock_fs
+                )
+
+                assert len(result) == 1
+                assert result[0]["metadata_ingest_status"] == "Success"
+
+        finally:
+            os.chdir(original_cwd)
 
 
 if __name__ == "__main__":

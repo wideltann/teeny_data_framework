@@ -12,16 +12,16 @@ Use the CLI to automatically infer column types from your data files. This gener
 
 ```bash
 # Infer schema from a single file
-python table_functions.py <file_path>
+uv run python table_functions.py <file_path>
 
 # Infer schema from all files in a directory (output keyed by filename)
-python table_functions.py <directory_path>
+uv run python table_functions.py <directory_path>
 
 # Examples
-python table_functions.py data/my_file.csv
-python table_functions.py data/my_file.psv --filetype psv
-python table_functions.py data/my_file.data --no-header
-python table_functions.py data/earthquakes/  # All files in dir
+uv run python table_functions.py data/my_file.csv
+uv run python table_functions.py data/my_file.psv --filetype psv
+uv run python table_functions.py data/my_file.data --no-header
+uv run python table_functions.py data/earthquakes/  # All files in dir
 ```
 
 ### CLI Options
@@ -37,7 +37,7 @@ python table_functions.py data/earthquakes/  # All files in dir
 
 ```bash
 # 1. Run CLI to infer schema
-python table_functions.py data/earthquakes.csv --pretty
+uv run python table_functions.py data/earthquakes.csv --pretty
 
 # 2. Copy the JSON output and paste as column_mapping in your notebook:
 column_mapping = {
@@ -101,7 +101,7 @@ The CLI output is designed for easy multi-file ingestion with dynamic mappings:
 
 ```python
 # 1. Run CLI on directory
-# python table_functions.py data/my_files/ --pretty > schema.json
+# uv run python table_functions.py data/my_files/ --pretty > schema.json
 
 # 2. Paste output as all_mappings dict
 all_mappings = {
@@ -256,6 +256,7 @@ du -sh temp/              # Check cache size
 import s3fs
 fs = s3fs.S3FileSystem(profile="my-sso-profile")
 add_files_to_metadata_table(..., filesystem=fs)
+update_table(..., filesystem=fs)
 ```
 Or set `AWS_PROFILE=my-profile` environment variable.
 
@@ -294,7 +295,7 @@ temp/                 # S3 file cache
 
 Marimo notebooks can be run as Python scripts:
 ```bash
-python example_iris_dataset.py
+uv run python example_iris_dataset.py
 ```
 
 ### 6. Marimo Setup Cell Pattern
@@ -464,6 +465,7 @@ Quick reference for `update_table()` optional parameters:
 | `cleanup` | `bool` | Delete cached files after successful ingestion |
 | `ephemeral_cache` | `bool` | Use temporary directory (auto-deleted) instead of persistent `temp/` |
 | `encoding` | `str` | File encoding (e.g., `"latin-1"`, `"cp1252"`). If None, auto-detects. |
+| `filesystem` | `s3fs.S3FileSystem` | S3 filesystem for custom auth (e.g., SSO profiles) |
 
 ## File Type Reference
 
@@ -512,13 +514,13 @@ podman machine start
 
 ```bash
 # Run all tests
-pytest tests/ -v
+uv run pytest tests/ -v
 
 # Run specific test file
-pytest tests/test_table_functions.py -v
+uv run pytest tests/test_table_functions.py -v
 
 # Run just path utility tests
-pytest tests/test_table_functions.py::TestPathUtilities -v
+uv run pytest tests/test_table_functions.py::TestPathUtilities -v
 ```
 
 **Test coverage includes:**
@@ -535,7 +537,7 @@ pytest tests/test_table_functions.py::TestPathUtilities -v
 Reset database and test:
 ```bash
 psql -U tanner -d postgres -c "DROP SCHEMA IF EXISTS raw CASCADE; CREATE SCHEMA raw;"
-python example_iris_dataset.py
+uv run python example_iris_dataset.py
 ```
 
 Check results:
