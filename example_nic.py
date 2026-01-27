@@ -54,12 +54,12 @@ S3_SOURCE_DIR = "s3://your-bucket/ffiec/nic"
 
 FFIEC_TABLES = {
     "attributes_active": {
-        "pk": "id_rssd",
+        "pk": ["id_rssd"],
         "pattern": "ATTRIBUTES_ACTIVE",
         "column_mapping": {"id_rssd": ([], "int"), "transtype": ([], "string")},
     },
     "attributes_branch": {
-        "pk": "id_rssd",
+        "pk": ["id_rssd"],
         "pattern": "ATTRIBUTES_BRANCH",
         "column_mapping": {"id_rssd": ([], "int"), "transtype": ([], "string")},
     },
@@ -164,7 +164,7 @@ def load_ffiec_nic(
                 for c in cfg["column_mapping"]
                 if c not in ("transtype", "default")
             )
-            pk = sql.Identifier(cfg["pk"])
+            pk = sql.SQL(", ").join(sql.Identifier(c) for c in cfg["pk"])
             cur.execute(sql.SQL("TRUNCATE nic.{}").format(tbl))
             cur.execute(
                 sql.SQL("""
