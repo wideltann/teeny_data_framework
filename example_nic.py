@@ -9,9 +9,8 @@ from typing import NamedTuple
 
 import psycopg
 from psycopg import sql
-import s3fs
 
-from table_functions import add_files_to_metadata_table, update_table
+from table_functions import add_files_to_metadata_table, update_table, get_s3_client, s3_glob
 
 
 TYPE_MAP = {
@@ -85,8 +84,8 @@ def load_ffiec_nic(
     patterns: list[str] | None = None,
 ):
     print(f"Listing {source_dir}...")
-    paths = s3fs.S3FileSystem().glob(f"{source_dir}/**/*.xml")
-    all_files = [f"s3://{p}" for p in paths]
+    client = get_s3_client()
+    all_files = s3_glob(client, source_dir, "**/*.xml")
     print(f"Found {len(all_files)} files")
 
     # Parse and group files by pattern
@@ -133,7 +132,9 @@ def load_ffiec_nic(
             old_full_dates = [d for p in old_full_paths if (d := parse_date(p))]
             old_full_date = max(old_full_dates) if old_full_dates else None
             if old_full_date and old_full_date < latest_full_date:
-                print(f"New full detected ({old_full_date} -> {latest_full_date}), resetting {table_name}")
+                print(
+                    f"New full detected ({old_full_date} -> {latest_full_date}), resetting {table_name}"
+                )
                 cur.execute(sql.SQL("TRUNCATE staging.{}").format(tbl))
                 cur.execute(
                     sql.SQL(
@@ -150,7 +151,9 @@ def load_ffiec_nic(
                     schema="staging",
                     source_dir=source_dir,
                     filetype="xml",
-                    file_list_filter_fn=lambda paths, ta=to_add: [p for p in paths if p in ta],
+                    file_list_filter_fn=lambda paths, ta=to_add: [
+                        p for p in paths if p in ta
+                    ],
                 )
 
             update_table(
@@ -197,6 +200,8 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--conninfo", default="postgresql://localhost/ffiec")
     p.add_argument("--source-dir", default=S3_SOURCE_DIR)
-    p.add_argument("--patterns", nargs="+", help="Patterns to process (e.g., ATTRIBUTES_ACTIVE)")
+    p.add_argument(
+        "--patterns", nargs="+", help="Patterns to process (e.g., ATTRIBUTES_ACTIVE)"
+    )
     a = p.parse_args()
     load_ffiec_nic(a.conninfo, a.source_dir, a.patterns)
