@@ -426,21 +426,17 @@ def read_delimited(
     encoding: Optional[str] = None,
 ) -> pd.DataFrame:
     """Read delimited file (CSV, TSV, PSV) and return DataFrame with column mapping."""
-    from io import StringIO
-
+    # Use utf-8-sig to handle BOM automatically
     encoding = encoding or "utf-8"
-    with open(full_path, "r", encoding=encoding) as f:
-        file_content = f.read()
-
-    # Remove BOM if present
-    if file_content.startswith("\ufeff"):
-        file_content = file_content[1:]
+    if encoding.lower() == "utf-8":
+        encoding = "utf-8-sig"
 
     if not header:
         import csv
 
-        reader = csv.reader(StringIO(file_content), delimiter=separator)
-        header = next(reader)
+        with open(full_path, "r", encoding=encoding) as f:
+            reader = csv.reader(f, delimiter=separator)
+            header = next(reader)
 
     mapping_result = prepare_column_mapping(header, column_mapping)
 
@@ -451,23 +447,25 @@ def read_delimited(
 
     try:
         df = pd.read_csv(
-            StringIO(file_content),
+            full_path,
             sep=separator,
             header=0 if has_header else None,
             names=header if not has_header else None,
             dtype=mapping_result.read_dtypes,
             na_values=null_values,
             keep_default_na=keep_default_na,
+            encoding=encoding,
         )
     except (ValueError, TypeError) as e:
         # Try to identify which column caused the error
         df_raw = pd.read_csv(
-            StringIO(file_content),
+            full_path,
             sep=separator,
             header=0 if has_header else None,
             names=header if not has_header else None,
             na_values=null_values,
             keep_default_na=keep_default_na,
+            encoding=encoding,
         )
         for col, dtype in mapping_result.read_dtypes.items():
             if col in df_raw.columns:
@@ -582,12 +580,6 @@ def read_fixed_width(
 
     Note: starting_position is 1-indexed (first character is position 1)
     """
-    from io import StringIO
-
-    encoding = encoding or "utf-8"
-    with open(full_path, "r", encoding=encoding) as f:
-        file_content = f.read()
-
     colspecs = []
     names = []
     dtypes = {}
@@ -600,10 +592,12 @@ def read_fixed_width(
         dtypes[col_name] = dtype_str_to_pandas(col_type)
 
     return pd.read_fwf(
-        StringIO(file_content),
+        full_path,
         colspecs=colspecs,
         names=names,
         dtype=dtypes,
+        encoding=encoding or "utf-8",
+        encoding_errors="replace",
     )
 
 
