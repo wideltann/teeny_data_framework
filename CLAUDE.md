@@ -218,7 +218,7 @@ add_files_to_metadata_table(
 - Cache path is derived from `source_path`, mirroring the S3 structure locally
 
 **Requirements:**
-- Install s3fs: `pip install s3fs`
+- Install boto3: `pip install boto3`
 - AWS credentials configured (via environment, ~/.aws/credentials, or IAM role)
 
 **How it works:**
@@ -253,10 +253,11 @@ du -sh temp/              # Check cache size
 
 **Using AWS SSO or named profiles:**
 ```python
-import s3fs
-fs = s3fs.S3FileSystem(profile="my-sso-profile")
-add_files_to_metadata_table(..., filesystem=fs)
-update_table(..., filesystem=fs)
+import boto3
+session = boto3.Session(profile_name="my-sso-profile")
+s3_client = session.client("s3")
+add_files_to_metadata_table(..., s3_client=s3_client)
+update_table(..., s3_client=s3_client)
 ```
 Or set `AWS_PROFILE=my-profile` environment variable.
 
@@ -465,7 +466,7 @@ Quick reference for `update_table()` optional parameters:
 | `cleanup` | `bool` | Delete cached files after successful ingestion |
 | `ephemeral_cache` | `bool` | Use temporary directory (auto-deleted) instead of persistent `temp/` |
 | `encoding` | `str` | File encoding (e.g., `"latin-1"`, `"cp1252"`). If None, auto-detects. |
-| `filesystem` | `s3fs.S3FileSystem` | S3 filesystem for custom auth (e.g., SSO profiles) |
+| `s3_client` | `boto3.client` | boto3 S3 client for custom auth (e.g., SSO profiles) |
 
 ## File Type Reference
 

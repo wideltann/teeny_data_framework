@@ -273,19 +273,19 @@ def path_parent(path: str) -> str:
     return "/".join(parts[:-1]) if len(parts) > 1 else ""
 
 
-def get_s3_filesystem(filesystem: Optional[Any] = None) -> Any:
-    """Get an s3fs filesystem instance."""
-    if filesystem is not None:
-        return filesystem
+def get_s3_client(s3_client: Optional[Any] = None) -> Any:
+    """Get a boto3 S3 client instance."""
+    if s3_client is not None:
+        return s3_client
 
     try:
-        import s3fs
+        import boto3
     except ImportError:
         raise ImportError(
-            "s3fs is required for S3 support. Install with: pip install s3fs"
+            "boto3 is required for S3 support. Install with: pip install boto3"
         )
 
-    return s3fs.S3FileSystem()
+    return boto3.client("s3")
 
 
 def get_cache_path_from_s3(s3_path: str, is_archive: bool = False) -> Path:
@@ -321,14 +321,59 @@ def get_cache_path_from_source_path(source_path: str) -> Path:
         return Path(source_path)
 
 
+def parse_s3_path(s3_path: str) -> tuple[str, str]:
+    """Parse an S3 path into (bucket, key)."""
+    path_without_prefix = s3_path.replace("s3://", "")
+    parts = path_without_prefix.split("/", 1)
+    bucket = parts[0]
+    key = parts[1] if len(parts) > 1 else ""
+    return bucket, key
+
+
+def s3_glob(s3_client: Any, s3_dir: str, glob_pattern: str) -> list[str]:
+    """List S3 objects matching a glob pattern (supports ** for recursive).
+
+    Args:
+        s3_client: boto3 S3 client
+        s3_dir: S3 directory path (e.g., "s3://bucket/prefix")
+        glob_pattern: Glob pattern to match (e.g., "*.csv" or "**/*.csv")
+
+    Returns:
+        List of full S3 paths (s3://bucket/key) matching the pattern
+    """
+    import fnmatch
+
+    bucket, prefix = parse_s3_path(s3_dir)
+    if prefix and not prefix.endswith("/"):
+        prefix += "/"
+
+    # List all objects under the prefix
+    paginator = s3_client.get_paginator("list_objects_v2")
+    all_keys = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            all_keys.append(obj["Key"])
+
+    # Apply glob filtering
+    # For patterns like "**/*.csv", we need to match against the relative path
+    results = []
+    for key in all_keys:
+        relative_path = key[len(prefix) :] if prefix else key
+        if fnmatch.fnmatch(relative_path, glob_pattern):
+            results.append(f"s3://{bucket}/{key}")
+
+    return results
+
+
 def download_s3_file_with_cache(
-    s3_path: str, filesystem: Any, is_archive: bool = False
+    s3_path: str, s3_client: Any, is_archive: bool = False
 ) -> Path:
     """Download S3 file to persistent cache, reusing cached file if it exists with matching size."""
     cache_path = get_cache_path_from_s3(s3_path, is_archive=is_archive)
 
-    s3_info = filesystem.info(s3_path)
-    s3_size = s3_info["size"]
+    bucket, key = parse_s3_path(s3_path)
+    response = s3_client.head_object(Bucket=bucket, Key=key)
+    s3_size = response["ContentLength"]
 
     if cache_path.exists():
         cached_size = cache_path.stat().st_size
@@ -337,7 +382,7 @@ def download_s3_file_with_cache(
             return cache_path
 
     print(f"Downloading: {s3_path} -> {cache_path.relative_to(Path.cwd())}")
-    filesystem.get(s3_path, str(cache_path))
+    s3_client.download_file(bucket, key, str(cache_path))
 
     return cache_path
 
@@ -806,7 +851,7 @@ def update_table(
     cleanup: bool = False,
     ephemeral_cache: bool = False,
     encoding: Optional[str] = None,
-    filesystem: Optional[Any] = None,
+    s3_client: Optional[Any] = None,
 ) -> pd.DataFrame:
     """
     Main ingestion function that reads files and writes to PostgreSQL.
@@ -836,7 +881,7 @@ def update_table(
         cleanup: Delete cached files after successful ingest
         ephemeral_cache: Use temporary directory (auto-deleted)
         encoding: File encoding (defaults to utf-8)
-        filesystem: S3 filesystem instance for custom auth (e.g., SSO profiles)
+        s3_client: boto3 S3 client for custom auth (e.g., SSO profiles)
 
     Returns:
         DataFrame with metadata results
@@ -901,18 +946,18 @@ def update_table(
                 f"{'new files' if resume else 'total files'}"
             )
 
-        fs = None
+        client = None
         if any(is_s3_path(f.split("::")[0]) for f in file_list):
-            fs = get_s3_filesystem(filesystem)
+            client = get_s3_client(s3_client)
 
         for i, source_path in enumerate(file_list):
             if sample and i == sample:
                 break
             start_time = time.time()
             s3_base_path = source_path.split("::")[0]
-            if fs and is_s3_path(s3_base_path):
+            if client and is_s3_path(s3_base_path):
                 download_s3_file_with_cache(
-                    s3_base_path, fs, is_archive="::" in source_path
+                    s3_base_path, client, is_archive="::" in source_path
                 )
             cache_path = get_cache_path_from_source_path(source_path)
             header, has_header = (
@@ -1152,7 +1197,7 @@ def extract_and_add_zip_files(
     resume: bool,
     sample: Optional[int],
     archive_glob: str,
-    filesystem: Optional[Any] = None,
+    s3_client: Optional[Any] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """Extract files from ZIP archives and add to metadata."""
     try:
@@ -1168,9 +1213,9 @@ def extract_and_add_zip_files(
     archive_stats: Dict[str, int] = {}
     num_processed = 0
 
-    fs = None
+    client = None
     if any(is_s3_path(f) for f in file_list):
-        fs = get_s3_filesystem(filesystem)
+        client = get_s3_client(s3_client)
 
     source_path_set = set(source_path_list) if source_path_list else set()
 
@@ -1182,7 +1227,9 @@ def extract_and_add_zip_files(
         archive_file_count = 0
 
         if is_s3_path(archive_path):
-            cached_zip = download_s3_file_with_cache(archive_path, fs, is_archive=True)
+            cached_zip = download_s3_file_with_cache(
+                archive_path, client, is_archive=True
+            )
             zip_path = str(cached_zip)
         else:
             zip_path = archive_path
@@ -1276,7 +1323,7 @@ def add_files(
     resume: bool = False,
     sample: Optional[int] = None,
     source_path_list: Optional[List[str]] = None,
-    filesystem: Optional[Any] = None,
+    s3_client: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Process non-archive files and add to metadata."""
     source_dir = normalize_path(source_dir) if source_dir else None
@@ -1292,9 +1339,9 @@ def add_files(
         f"{'new files' if resume else 'total files'}"
     )
 
-    fs = None
+    client = None
     if any(is_s3_path(f) for f in file_list):
-        fs = get_s3_filesystem(filesystem)
+        client = get_s3_client(s3_client)
 
     rows = []
     num_processed = 0
@@ -1309,7 +1356,7 @@ def add_files(
 
         try:
             if is_s3_path(source_path):
-                download_s3_file_with_cache(source_path, fs)
+                download_s3_file_with_cache(source_path, client)
 
             row = get_file_metadata_row(
                 source_path=source_path,
@@ -1349,7 +1396,7 @@ def add_files_to_metadata_table(
     retry_failed: bool = False,
     sample: Optional[int] = None,
     file_list_filter_fn: Optional[Callable[[List[str]], List[str]]] = None,
-    filesystem: Optional[Any] = None,
+    s3_client: Optional[Any] = None,
     expected_archive_file_count: Optional[int] = None,
     ephemeral_cache: bool = False,
 ) -> pd.DataFrame:
@@ -1369,7 +1416,7 @@ def add_files_to_metadata_table(
         retry_failed: Re-process failed files when resume=True
         sample: Process only N files
         file_list_filter_fn: Function to filter file list
-        filesystem: s3fs filesystem for S3 access
+        s3_client: boto3 S3 client for S3 access
         expected_archive_file_count: Expected files per archive (enables archive-level skip)
         ephemeral_cache: Use temporary directory (auto-deleted)
 
@@ -1384,8 +1431,8 @@ def add_files_to_metadata_table(
         source_dir = normalize_path(source_dir)
 
         if is_s3_path(source_dir):
-            fs = get_s3_filesystem(filesystem)
-            file_list = [f"s3://{p}" for p in fs.glob(f"{source_dir}/**/{glob}")]
+            client = get_s3_client(s3_client)
+            file_list = s3_glob(client, source_dir, f"**/{glob}")
         else:
             file_list = [f.as_posix() for f in Path(source_dir).rglob(glob)]
 
@@ -1460,7 +1507,7 @@ def add_files_to_metadata_table(
                 resume,
                 sample,
                 archive_glob,
-                filesystem,
+                s3_client,
             )
         elif compression_type is None:
             rows = add_files(
@@ -1471,7 +1518,7 @@ def add_files_to_metadata_table(
                 resume,
                 sample,
                 source_path_list,
-                filesystem,
+                s3_client,
             )
             archive_stats = {}
         else:

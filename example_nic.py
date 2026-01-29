@@ -10,7 +10,12 @@ from typing import NamedTuple
 import psycopg
 from psycopg import sql
 
-from table_functions import add_files_to_metadata_table, update_table, get_s3_client, s3_glob
+from table_functions import (
+    add_files_to_metadata_table,
+    update_table,
+    get_s3_client,
+    s3_glob,
+)
 
 
 TYPE_MAP = {

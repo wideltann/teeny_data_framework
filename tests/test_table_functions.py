@@ -15,7 +15,6 @@ Requires Docker to be running.
 
 import pytest
 import pandas as pd
-import numpy as np
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 import tempfile
@@ -30,7 +29,9 @@ import psycopg
 from table_functions import (
     # S3 helpers
     is_s3_path,
-    get_s3_filesystem,
+    get_s3_client,
+    parse_s3_path,
+    s3_glob,
     # Path utilities
     normalize_path,
     path_join,
@@ -266,18 +267,31 @@ class TestS3Helpers:
         assert not is_s3_path("http://example.com")
         assert not is_s3_path("s3:/bucket/path")  # Path-mangled no longer supported
 
-    def test_get_s3_filesystem_returns_passed_filesystem(self):
-        """Test that get_s3_filesystem returns the passed filesystem if provided"""
-        mock_fs = MagicMock()
-        result = get_s3_filesystem(mock_fs)
-        assert result is mock_fs
+    def test_get_s3_client_returns_passed_client(self):
+        """Test that get_s3_client returns the passed client if provided"""
+        mock_client = MagicMock()
+        result = get_s3_client(mock_client)
+        assert result is mock_client
 
-    def test_get_s3_filesystem_creates_new(self):
-        """Test that get_s3_filesystem creates a new S3FileSystem if not provided"""
-        import s3fs
+    def test_get_s3_client_creates_new(self):
+        """Test that get_s3_client creates a new boto3 client if not provided"""
+        import boto3
 
-        result = get_s3_filesystem(None)
-        assert isinstance(result, s3fs.S3FileSystem)
+        result = get_s3_client(None)
+        # Check it's a boto3 S3 client by verifying it has expected methods
+        assert hasattr(result, "head_object")
+        assert hasattr(result, "download_file")
+        assert hasattr(result, "get_paginator")
+
+    def test_parse_s3_path(self):
+        """Test parsing S3 paths into bucket and key"""
+        assert parse_s3_path("s3://my-bucket/path/to/file.csv") == (
+            "my-bucket",
+            "path/to/file.csv",
+        )
+        assert parse_s3_path("s3://bucket/file.txt") == ("bucket", "file.txt")
+        assert parse_s3_path("s3://bucket-name/") == ("bucket-name", "")
+        assert parse_s3_path("s3://bucket") == ("bucket", "")
 
 
 # ===== PATH UTILITY TESTS =====
@@ -4811,18 +4825,19 @@ class TestS3HelperFunctions:
         assert is_s3_path("data/raw/file.csv") is False
         assert is_s3_path(Path("/local/path")) is False
 
-    def test_get_s3_filesystem_returns_passed(self):
-        """Test get_s3_filesystem returns passed filesystem"""
-        mock_fs = MagicMock()
-        result = get_s3_filesystem(mock_fs)
-        assert result is mock_fs
+    def test_get_s3_client_returns_passed(self):
+        """Test get_s3_client returns passed client"""
+        mock_client = MagicMock()
+        result = get_s3_client(mock_client)
+        assert result is mock_client
 
-    def test_get_s3_filesystem_creates_new(self):
-        """Test get_s3_filesystem creates new filesystem if not provided"""
-        import s3fs
+    def test_get_s3_client_creates_new(self):
+        """Test get_s3_client creates new client if not provided"""
+        import boto3
 
-        result = get_s3_filesystem(None)
-        assert isinstance(result, s3fs.S3FileSystem)
+        result = get_s3_client(None)
+        assert hasattr(result, "head_object")
+        assert hasattr(result, "download_file")
 
 
 class TestS3GetFileMetadataRow:
@@ -6018,17 +6033,19 @@ class TestDownloadS3FileWithCache:
         try:
             os.chdir(temp_dir)
 
-            # Mock filesystem
-            mock_fs = Mock()
-            mock_fs.info.return_value = {"size": 100}
-            mock_fs.get = Mock()
+            # Mock boto3 S3 client
+            mock_client = Mock()
+            mock_client.head_object.return_value = {"ContentLength": 100}
+            mock_client.download_file = Mock()
 
             s3_path = "s3://bucket/data/file.csv"
-            result = download_s3_file_with_cache(s3_path, mock_fs)
+            result = download_s3_file_with_cache(s3_path, mock_client)
 
-            # Should call info and get
-            mock_fs.info.assert_called_once_with(s3_path)
-            mock_fs.get.assert_called_once()
+            # Should call head_object and download_file
+            mock_client.head_object.assert_called_once_with(
+                Bucket="bucket", Key="data/file.csv"
+            )
+            mock_client.download_file.assert_called_once()
 
             # Result should be the cache path
             expected = (
@@ -6052,17 +6069,19 @@ class TestDownloadS3FileWithCache:
             cached_file = cache_dir / "file.csv"
             cached_file.write_text("x" * 100)  # 100 bytes
 
-            # Mock filesystem returning same size
-            mock_fs = Mock()
-            mock_fs.info.return_value = {"size": 100}
-            mock_fs.get = Mock()
+            # Mock boto3 S3 client returning same size
+            mock_client = Mock()
+            mock_client.head_object.return_value = {"ContentLength": 100}
+            mock_client.download_file = Mock()
 
             s3_path = "s3://bucket/data/file.csv"
-            result = download_s3_file_with_cache(s3_path, mock_fs)
+            result = download_s3_file_with_cache(s3_path, mock_client)
 
-            # Should call info but NOT get (cache hit)
-            mock_fs.info.assert_called_once_with(s3_path)
-            mock_fs.get.assert_not_called()
+            # Should call head_object but NOT download_file (cache hit)
+            mock_client.head_object.assert_called_once_with(
+                Bucket="bucket", Key="data/file.csv"
+            )
+            mock_client.download_file.assert_not_called()
 
             assert result.resolve() == cached_file.resolve()
         finally:
@@ -6082,17 +6101,21 @@ class TestDownloadS3FileWithCache:
             cached_file = cache_dir / "file.csv"
             cached_file.write_text("x" * 50)  # 50 bytes
 
-            # Mock filesystem returning different size
-            mock_fs = Mock()
-            mock_fs.info.return_value = {"size": 100}  # S3 has 100 bytes
-            mock_fs.get = Mock()
+            # Mock boto3 S3 client returning different size
+            mock_client = Mock()
+            mock_client.head_object.return_value = {
+                "ContentLength": 100
+            }  # S3 has 100 bytes
+            mock_client.download_file = Mock()
 
             s3_path = "s3://bucket/data/file.csv"
-            result = download_s3_file_with_cache(s3_path, mock_fs)
+            result = download_s3_file_with_cache(s3_path, mock_client)
 
-            # Should call both info and get (size mismatch triggers download)
-            mock_fs.info.assert_called_once_with(s3_path)
-            mock_fs.get.assert_called_once()
+            # Should call both head_object and download_file (size mismatch triggers download)
+            mock_client.head_object.assert_called_once_with(
+                Bucket="bucket", Key="data/file.csv"
+            )
+            mock_client.download_file.assert_called_once()
         finally:
             os.chdir(original_cwd)
 
@@ -6104,12 +6127,12 @@ class TestDownloadS3FileWithCache:
         try:
             os.chdir(temp_dir)
 
-            mock_fs = Mock()
-            mock_fs.info.return_value = {"size": 1000}
-            mock_fs.get = Mock()
+            mock_client = Mock()
+            mock_client.head_object.return_value = {"ContentLength": 1000}
+            mock_client.download_file = Mock()
 
             s3_path = "s3://bucket/data/archive.zip"
-            result = download_s3_file_with_cache(s3_path, mock_fs, is_archive=True)
+            result = download_s3_file_with_cache(s3_path, mock_client, is_archive=True)
 
             # Archives should go to temp/archives/
             expected = (
@@ -6152,10 +6175,10 @@ class TestUpdateTableWithFilesystem:
             filetype="csv",
         )
 
-        # Mock filesystem (won't be used for local files but should be accepted)
-        mock_fs = Mock()
+        # Mock S3 client (won't be used for local files but should be accepted)
+        mock_client = Mock()
 
-        # Call update_table with filesystem parameter - should not raise
+        # Call update_table with s3_client parameter - should not raise
         column_mapping = {
             "col1": ([], "string"),
             "col2": ([], "string"),
@@ -6168,7 +6191,7 @@ class TestUpdateTableWithFilesystem:
             filetype="csv",
             output_table="test_table",
             column_mapping=column_mapping,
-            filesystem=mock_fs,  # Should be accepted
+            s3_client=mock_client,  # Should be accepted
         )
 
         # Verify data was ingested
@@ -6228,9 +6251,11 @@ class TestUpdateTableS3Download:
             cached_file = cache_dir / "file.csv"
             cached_file.write_text("col1,col2\na,1\nb,2\n")
 
-            # Mock filesystem
-            mock_fs = Mock()
-            mock_fs.info.return_value = {"size": cached_file.stat().st_size}
+            # Mock S3 client
+            mock_client = Mock()
+            mock_client.head_object.return_value = {
+                "ContentLength": cached_file.stat().st_size
+            }
 
             column_mapping = {
                 "col1": ([], "string"),
@@ -6248,14 +6273,14 @@ class TestUpdateTableS3Download:
                     filetype="csv",
                     output_table="test_table",
                     column_mapping=column_mapping,
-                    filesystem=mock_fs,
+                    s3_client=mock_client,
                 )
 
                 # Verify download was called for the S3 file
                 mock_download.assert_called_once()
                 call_args = mock_download.call_args
                 assert call_args[0][0] == "s3://bucket/data/file.csv"
-                assert call_args[0][1] == mock_fs
+                assert call_args[0][1] == mock_client
 
         finally:
             os.chdir(original_cwd)
@@ -6278,9 +6303,11 @@ class TestAddFilesUsesDownloadWithCache:
             cached_file = cache_dir / "file.csv"
             cached_file.write_text("col1,col2\na,1\n")
 
-            # Mock filesystem
-            mock_fs = Mock()
-            mock_fs.info.return_value = {"size": cached_file.stat().st_size}
+            # Mock S3 client
+            mock_client = Mock()
+            mock_client.head_object.return_value = {
+                "ContentLength": cached_file.stat().st_size
+            }
 
             with patch("table_functions.download_s3_file_with_cache") as mock_download:
                 mock_download.return_value = cached_file
@@ -6293,12 +6320,12 @@ class TestAddFilesUsesDownloadWithCache:
                     filetype="csv",
                     has_header=True,
                     source_path_list=[],
-                    filesystem=mock_fs,
+                    s3_client=mock_client,
                 )
 
                 # Verify download_s3_file_with_cache was called
                 mock_download.assert_called_once_with(
-                    "s3://bucket/data/file.csv", mock_fs
+                    "s3://bucket/data/file.csv", mock_client
                 )
 
                 assert len(result) == 1
